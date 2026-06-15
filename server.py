@@ -1878,6 +1878,32 @@ async def api_import_review(request):
 
 
 # =============================================================
+# /api/buckets/restore — bulk restore bucket files from tar.gz
+# /api/buckets/restore — 从 tar.gz 批量恢复记忆桶文件
+# =============================================================
+@mcp.custom_route("/api/buckets/restore", methods=["POST"])
+async def api_buckets_restore(request):
+    """Accept a tar.gz of bucket .md files and extract to buckets_dir."""
+    from starlette.responses import JSONResponse
+    import tarfile, io
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.body()
+        if not body:
+            return JSONResponse({"error": "Empty body"}, status_code=400)
+        tar_buf = io.BytesIO(body)
+        with tarfile.open(fileobj=tar_buf, mode="r:gz") as tar:
+            safe_members = [m for m in tar.getmembers()
+                           if not m.name.startswith("/") and ".." not in m.name]
+            tar.extractall(path=config["buckets_dir"], members=safe_members)
+            count = sum(1 for m in safe_members if m.name.endswith(".md"))
+        return JSONResponse({"status": "ok", "files_restored": count})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
 # /api/status — system status for Dashboard settings tab
 # /api/status — Dashboard 设置页用系统状态
 # =============================================================
