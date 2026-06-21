@@ -614,6 +614,7 @@
   <div class="tab active" data-tab="list">记忆桶</div>
   <div class="tab" data-tab="breath">Breath 模拟</div>
   <div class="tab" data-tab="network">记忆网络</div>
+  <div class="tab" data-tab="somatic">💗 心跳</div>
   <div class="tab" data-tab="config">配置</div>
   <div class="tab" data-tab="import">导入</div>
   <div class="tab" data-tab="settings">设置</div>
@@ -663,6 +664,21 @@
     <div class="legend-item"><span class="legend-dot" style="background:#B0A590"></span> archived</div>
   </div>
   <canvas id="network-canvas"></canvas>
+</div>
+
+<div class="content" id="somatic-view" style="display:none">
+  <div style="max-width:680px;margin:0 auto;">
+    <div id="somatic-head" style="text-align:center;margin:8px 0 20px;">
+      <div style="font-size:13px;letter-spacing:2px;color:var(--text-dim);">KELO SOMATIC FIELD</div>
+      <h2 style="margin:6px 0;color:var(--accent);">珂洛此刻</h2>
+      <div id="somatic-feel" style="color:var(--text-dim);font-size:14px;">读取中…</div>
+    </div>
+    <div id="somatic-bars" style="display:grid;gap:9px;"></div>
+    <div id="somatic-thoughts" style="margin-top:22px;"></div>
+    <div style="text-align:center;margin-top:18px;">
+      <button class="btn-secondary" onclick="loadSomatic()">刷新心跳</button>
+    </div>
+  </div>
 </div>
 
 <div class="content" id="import-view" style="display:none">
@@ -1045,15 +1061,66 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
     document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
+    document.getElementById('somatic-view').style.display = target === 'somatic' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
     if (target === 'network') loadNetwork();
+    if (target === 'somatic') loadSomatic();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
     if (target === 'settings') loadSettingsStatus();
   });
 });
+
+// —— 心跳面板 ——
+const SOMATIC_COLORS = {
+  attachment:'#E89CAE', intimacy:'#E8A0A0', longing:'#D88AB0', possess:'#B07BA0', craving:'#D9877B',
+  greedy:'#E0A85F', preference:'#F0A0C0', shyness:'#F2B8C6', indulgence:'#D9A0C8', protect:'#9FB8C9',
+  curiosity:'#8FC0E0', reflection:'#B9B4D8', duty:'#9FC9A8', social:'#F3D36B', play:'#F0C4A0',
+  contentment:'#C9D8A0', jealousy:'#D06A6A', stress:'#E0975F', fatigue:'#B0A590'
+};
+async function loadSomatic() {
+  const feelEl = document.getElementById('somatic-feel');
+  const barsEl = document.getElementById('somatic-bars');
+  const thEl = document.getElementById('somatic-thoughts');
+  try {
+    const r = await fetch('/api/somatic');
+    const data = await r.json();
+    const s = data.state;
+    if (!s || !s.drives) {
+      feelEl.textContent = '还没有状态——让珂洛 feel 一次，或用 somatic_digest 喂一段。';
+      barsEl.innerHTML = ''; thEl.innerHTML = '';
+      return;
+    }
+    feelEl.innerHTML = `当前倾向 <b style="color:var(--accent)">${s.dominantLabel}</b>（${s.feelTone}） · 召唤力 ${s.summon}%<br>` +
+      `<span style="font-size:13px;">此刻最想：${s.want}</span><br>` +
+      `<span style="font-size:12px;color:var(--text-light);">${s.triggerReason||''}</span>`;
+    const order = (s.topDrives||[]).map(d=>d.key);
+    const all = Object.keys(s.drives).sort((a,b)=> (s.drives[b]||0)-(s.drives[a]||0));
+    barsEl.innerHTML = all.map(k => {
+      const v = s.drives[k]||0; const c = SOMATIC_COLORS[k]||'#B0A590';
+      const label = ({attachment:'依恋',intimacy:'亲密',longing:'想念',possess:'占有',craving:'渴求',greedy:'贪恋',preference:'偏爱',shyness:'羞怯',indulgence:'放纵',protect:'守护',curiosity:'好奇',reflection:'回味',duty:'责任',social:'社交',play:'玩闹',contentment:'安心',jealousy:'吃醋',stress:'压力',fatigue:'疲惫'})[k]||k;
+      return `<div style="display:flex;align-items:center;gap:10px;">
+        <span style="width:48px;font-size:13px;color:var(--text-dim);">${label}</span>
+        <div style="flex:1;height:12px;border-radius:8px;background:rgba(180,165,140,0.18);overflow:hidden;">
+          <div style="width:${v}%;height:100%;border-radius:8px;background:${c};"></div></div>
+        <span style="width:34px;text-align:right;font-size:12px;color:var(--text-dim);">${(v/100).toFixed(2)}</span>
+      </div>`;
+    }).join('');
+    const ths = s.thoughts||[];
+    thEl.innerHTML = '<div style="font-size:13px;color:var(--text-dim);margin-bottom:8px;">心理念头 · ' + ths.length + '</div>' +
+      (ths.length ? ths.slice().sort((a,b)=>(b.kind==='fixation')-(a.kind==='fixation')||b.strength-a.strength).map(t=>{
+        const isFix = t.kind==='fixation';
+        const dl = ({attachment:'依恋',intimacy:'亲密',longing:'想念',possess:'占有',craving:'渴求',greedy:'贪恋',preference:'偏爱',shyness:'羞怯',indulgence:'放纵',protect:'守护',curiosity:'好奇',reflection:'回味',duty:'责任',social:'社交',play:'玩闹',contentment:'安心',jealousy:'吃醋',stress:'压力',fatigue:'疲惫'})[t.drive]||t.drive;
+        return `<div style="padding:10px 12px;margin-bottom:7px;border-radius:10px;background:var(--card,rgba(255,255,255,0.5));border:1px solid ${isFix?'#D06A6A55':'var(--border)'};">
+          <div style="font-size:14px;color:var(--text);">${t.text} <span style="font-size:10px;color:${isFix?'#D06A6A':'var(--text-light)'};font-weight:700;">${isFix?'执念':'闪念'}</span></div>
+          <div style="font-size:11px;color:var(--text-light);">挂在「${dl}」· 强度 ${t.strength}</div></div>`;
+      }).join('') : '<div style="font-size:13px;color:var(--text-light);">还没有念头。被反复点到的经历会沉淀成执念，把欲望顶高。</div>');
+  } catch(e) {
+    feelEl.textContent = '读取失败：' + e;
+  }
+}
 
 let searchTimer;
 document.getElementById('search-input').addEventListener('input', (e) => {
