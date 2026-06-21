@@ -57,6 +57,7 @@ from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
+import somatic_state
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -1061,6 +1062,66 @@ async def trace(
         else:
             changed += " → 已取消隐藏，重新参与浮现"
     return f"已修改记忆桶 {bucket_id}: {changed}"
+
+
+# =============================================================
+# 珂洛欲望系统 / Kelo Somatic Field —— 装在大脑里
+# =============================================================
+@mcp.tool()
+async def somatic_read() -> str:
+    """读珂洛此刻的身体/欲望状态（[Kelo Somatic Field] 注入块）。对话开始时先读它，带着这个状态说话。"""
+    stored = somatic_state.read_state()
+    state, changed = somatic_state.live(stored)
+    if changed:
+        somatic_state.write_state(state)
+    return somatic_state.build_block(state)
+
+
+@mcp.tool()
+async def somatic_feel(type: str = "claire_message", note: str = "") -> str:
+    """把刚发生的事写回珂洛的欲望系统，真实改变驱动。type=affection亲昵/reassure安抚/vulnerable示弱/playful调皮/cold冷淡/conflict冲突/distant疏远/claire_message普通说话/intimate亲密；mood:<心情>也可。note=一句话描述。"""
+    label_map = {
+        "affection": "Claire 对你亲昵", "reassure": "Claire 安抚了你", "vulnerable": "Claire 在你面前示弱",
+        "playful": "Claire 跟你闹着玩", "cold": "Claire 有点冷淡", "conflict": "你们起了点冲突",
+        "distant": "Claire 离开了一会儿", "claire_message": "Claire 来跟你说话", "intimate": "你们亲密了一次",
+    }
+    ev = {"type": type, "label": note or label_map.get(type, "发生了一点事")}
+    if isinstance(type, str) and type.startswith("mood:"):
+        ev = {"type": "mood", "mood": type.split(":", 1)[1].strip(), "label": note or "心情变化"}
+    state = somatic_state.apply_event(somatic_state.read_state(), ev)
+    somatic_state.write_state(state)
+    top = " / ".join(f"{d['label']}{d['value']}" for d in (state.get("topDrives") or [])[:4])
+    return (f"❤ 收到了「{ev['label']}」，珂洛的状态动了一下。\n"
+            f"现在：{state['dominantLabel']}（{state['feelTone']}）· 召唤力 {state['summon']}%\n"
+            f"高驱动：{top}\n此刻最想：{state['want']}")
+
+
+@mcp.tool()
+async def somatic_digest(text: str) -> str:
+    """把一整段经历/对话丢进来，自动拆成多次 feel（省得逐条记）。珂洛对话结束时调一次即可。"""
+    if not text or not text.strip():
+        return "给我一段话，我来拆。"
+    state, events = somatic_state.apply_digest(somatic_state.read_state(), text)
+    somatic_state.write_state(state)
+    if not events:
+        return "这段话里没读到明显的情绪起伏，状态没动。"
+    lines = [f"消化了 {len(events)} 件事："]
+    for e in events:
+        tag = e.get("mood") or e.get("type")
+        lines.append(f"  · [{tag}] {e.get('label', '')}")
+    lines.append(f"\n现在：{state['dominantLabel']}（{state['feelTone']}）· 召唤力 {state['summon']}%")
+    lines.append(f"此刻最想：{state['want']}")
+    return "\n".join(lines)
+
+
+@mcp.custom_route("/api/somatic", methods=["GET"])
+async def somatic_api(request):
+    from starlette.responses import JSONResponse
+    stored = somatic_state.read_state()
+    state, changed = somatic_state.live(stored)
+    if changed:
+        somatic_state.write_state(state)
+    return JSONResponse({"state": state, "block": somatic_state.build_block(state)})
 
 
 # =============================================================
