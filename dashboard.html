@@ -1262,9 +1262,55 @@ async function showDetail(id) {
         '<div class="field"><label>创建</label>' + (meta.created || '—') + '</div>' +
         '<div class="field"><label>最后活跃</label>' + (meta.last_active || '—') + '</div>' +
       '</div>' +
-      '<div class="detail-content">' + esc(b.content) + '</div>';
+      '<div class="detail-content" id="detail-text">' + esc(b.content) + '</div>' +
+      '<div id="detail-actions" style="display:flex;gap:8px;margin-top:16px;">' +
+        '<button class="btn-secondary" onclick="startEditBucket()">✎ 编辑正文</button>' +
+        '<button class="btn-secondary" style="color:#C0392B;border-color:rgba(192,57,43,0.4);" onclick="deleteBucket()">🗑 删除</button>' +
+      '</div>';
+    window.__detail = { id: id, content: b.content };
   } catch (e) {
     content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function startEditBucket() {
+  var d = window.__detail; if (!d) return;
+  var box = document.getElementById('detail-text');
+  box.innerHTML = '<textarea id="edit-textarea" style="width:100%;min-height:240px;font:14px/1.7 inherit;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text);box-sizing:border-box;"></textarea>';
+  document.getElementById('edit-textarea').value = d.content;
+  document.getElementById('detail-actions').innerHTML =
+    '<button class="btn-primary" onclick="saveBucketEdit()">保存</button>' +
+    '<button class="btn-secondary" onclick="showDetail(window.__detail.id)">取消</button>';
+}
+
+async function saveBucketEdit() {
+  var d = window.__detail; if (!d) return;
+  var val = document.getElementById('edit-textarea').value;
+  var btn = event.target; btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    var r = await fetch(BASE + '/api/bucket/' + d.id, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: val })
+    });
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+    await showDetail(d.id);
+    if (typeof loadBuckets === 'function') loadBuckets();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = '保存';
+    alert('保存失败: ' + e.message);
+  }
+}
+
+async function deleteBucket() {
+  var d = window.__detail; if (!d) return;
+  if (!confirm('确定删除这条记忆？不可恢复。')) return;
+  try {
+    var r = await fetch(BASE + '/api/bucket/' + d.id, { method: 'DELETE' });
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+    closeDetail();
+    if (typeof loadBuckets === 'function') loadBuckets();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
   }
 }
 

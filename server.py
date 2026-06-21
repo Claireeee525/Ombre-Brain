@@ -1379,6 +1379,69 @@ async def api_bucket_detail(request):
     })
 
 
+@mcp.custom_route("/api/bucket/{bucket_id}", methods=["PUT"])
+async def api_bucket_edit(request):
+    """Edit a bucket's content / metadata from the dashboard（复用 trace 的逻辑）。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    bucket_id = request.path_params["bucket_id"]
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+
+    updates = {}
+    if isinstance(body.get("content"), str) and body["content"].strip():
+        updates["content"] = body["content"]
+    if isinstance(body.get("name"), str) and body["name"].strip():
+        updates["name"] = body["name"].strip()
+    if isinstance(body.get("importance"), (int, float)) and 1 <= body["importance"] <= 10:
+        updates["importance"] = int(body["importance"])
+    for flag in ("resolved", "pinned", "digested"):
+        if isinstance(body.get(flag), bool):
+            updates[flag] = body[flag]
+    if isinstance(body.get("tags"), list):
+        updates["tags"] = [str(t).strip() for t in body["tags"] if str(t).strip()]
+    if isinstance(body.get("domain"), list):
+        updates["domain"] = [str(d).strip() for d in body["domain"] if str(d).strip()]
+    for k in ("valence", "arousal"):
+        if isinstance(body.get(k), (int, float)) and 0 <= body[k] <= 1:
+            updates[k] = float(body[k])
+    if not updates:
+        return JSONResponse({"error": "no editable fields"}, status_code=400)
+
+    ok = await bucket_mgr.update(bucket_id, **updates)
+    if not ok:
+        return JSONResponse({"error": "update failed"}, status_code=500)
+    if "content" in updates:
+        try:
+            await embedding_engine.generate_and_store(bucket_id, updates["content"])
+        except Exception:
+            pass
+    return JSONResponse({"ok": True, "updated": list(updates.keys())})
+
+
+@mcp.custom_route("/api/bucket/{bucket_id}", methods=["DELETE"])
+async def api_bucket_delete(request):
+    """Delete a bucket from the dashboard."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    bucket_id = request.path_params["bucket_id"]
+    ok = await bucket_mgr.delete(bucket_id)
+    if ok:
+        try:
+            embedding_engine.delete_embedding(bucket_id)
+        except Exception:
+            pass
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 @mcp.custom_route("/api/search", methods=["GET"])
 async def api_search(request):
     """Search buckets by query."""
