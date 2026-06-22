@@ -576,6 +576,191 @@
   .flow-step.active { border-color: var(--accent); color: var(--accent); }
   .flow-arrow { color: var(--text-light); font-size: 16px; }
 
+  .somatic-shell {
+    width: min(900px, 100%);
+    margin: 0 auto;
+    display: grid;
+    gap: 18px;
+  }
+  .somatic-hero,
+  .somatic-card {
+    border: 1px solid rgba(180, 165, 140, 0.22);
+    background:
+      radial-gradient(circle at 12% 10%, rgba(255,255,255,0.95), rgba(255,255,255,0.2) 28%, transparent 42%),
+      linear-gradient(145deg, rgba(255,255,255,0.64), rgba(247,242,232,0.42));
+    border-radius: 24px;
+    box-shadow: 10px 14px 28px rgba(163, 148, 120, 0.16), -8px -8px 22px rgba(255, 252, 240, 0.68);
+    backdrop-filter: blur(14px);
+  }
+  .somatic-hero {
+    min-height: 188px;
+    padding: 30px 38px;
+    display: grid;
+    grid-template-columns: 118px 1fr;
+    gap: 28px;
+    align-items: center;
+  }
+  .somatic-orb {
+    width: 112px;
+    height: 112px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: #A05B6E;
+    font-size: 46px;
+    background:
+      radial-gradient(circle at 34% 26%, rgba(255,255,255,0.96), rgba(255,255,255,0.45) 42%, rgba(237,228,211,0.62) 100%);
+    border: 1px solid rgba(180, 165, 140, 0.22);
+    box-shadow: inset 7px 7px 16px rgba(163,148,120,0.10), inset -7px -7px 16px rgba(255,255,255,0.72), 8px 10px 18px rgba(163,148,120,0.14);
+  }
+  .somatic-kicker {
+    color: #B99CAC;
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 22px;
+    font-style: italic;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .somatic-feel-main {
+    display: flex;
+    gap: 14px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .somatic-dominant {
+    color: var(--text);
+    font-family: 'Cormorant Garamond', serif;
+    font-size: clamp(32px, 4vw, 50px);
+    line-height: 1.02;
+    font-weight: 600;
+  }
+  .somatic-tone {
+    padding: 6px 14px;
+    border-radius: 999px;
+    color: var(--accent);
+    background: rgba(47, 79, 79, 0.08);
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .somatic-summon {
+    margin-top: 14px;
+    color: var(--text-dim);
+    font-size: 17px;
+  }
+  .somatic-summon b { color: #A05B6E; font-size: 23px; }
+  .somatic-trigger {
+    margin-top: 14px;
+    color: var(--text-light);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .somatic-want-card {
+    padding: 24px 34px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 20px;
+    align-items: center;
+  }
+  .somatic-want-label,
+  .somatic-panel-label {
+    color: var(--text-light);
+    font-size: 13px;
+    letter-spacing: 1.2px;
+  }
+  .somatic-want-text {
+    margin-top: 8px;
+    color: var(--accent);
+    font-family: 'Cormorant Garamond', serif;
+    font-size: clamp(26px, 3.4vw, 38px);
+    font-weight: 600;
+    line-height: 1.08;
+  }
+  .somatic-want-pill {
+    padding: 10px 18px;
+    border-radius: 999px;
+    color: #A05B6E;
+    background: rgba(255,255,255,0.56);
+    box-shadow: inset 3px 3px 8px rgba(163,148,120,0.08), inset -3px -3px 8px rgba(255,255,255,0.74);
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .somatic-card { padding: 24px 30px; }
+  .somatic-panel-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    align-items: center;
+    margin-bottom: 18px;
+  }
+  .somatic-panel-title {
+    margin-top: 5px;
+    color: var(--text);
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 28px;
+    font-weight: 600;
+  }
+  .somatic-drive-list {
+    display: grid;
+    gap: 12px;
+  }
+  .somatic-drive {
+    display: grid;
+    grid-template-columns: 82px 1fr 44px;
+    gap: 14px;
+    align-items: center;
+  }
+  .somatic-drive-name {
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .somatic-drive-track {
+    height: 13px;
+    border-radius: 999px;
+    background: rgba(180,165,140,0.14);
+    overflow: hidden;
+    box-shadow: inset 3px 3px 7px rgba(163,148,120,0.10), inset -3px -3px 7px rgba(255,255,255,0.6);
+  }
+  .somatic-drive-fill {
+    height: 100%;
+    min-width: 5px;
+    border-radius: 999px;
+    background: var(--drive-color);
+  }
+  .somatic-drive-value {
+    color: var(--text-dim);
+    font-size: 14px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .somatic-thought-list {
+    display: grid;
+    gap: 10px;
+  }
+  .somatic-thought {
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.42);
+    border: 1px solid var(--border);
+  }
+  .somatic-thought.is-fixation { border-color: rgba(208,106,106,0.36); }
+  .somatic-thought-text {
+    color: var(--text);
+    font-size: 14px;
+  }
+  .somatic-thought-tag {
+    margin-left: 8px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .somatic-thought-meta {
+    margin-top: 5px;
+    color: var(--text-light);
+    font-size: 12px;
+  }
+
   @media (max-width: 768px) {
     .header { padding: 20px; flex-wrap: wrap; }
     .header h1 { font-size: 22px; }
@@ -596,6 +781,28 @@
     .config-row { flex-wrap: wrap; }
     .config-row label { width: 100%; }
     .breath-flow { display: none; }
+    .somatic-hero {
+      grid-template-columns: 1fr;
+      gap: 16px;
+      padding: 24px 20px;
+      min-height: 0;
+    }
+    .somatic-orb {
+      width: 86px;
+      height: 86px;
+      font-size: 36px;
+    }
+    .somatic-want-card {
+      grid-template-columns: 1fr;
+      padding: 22px 20px;
+    }
+    .somatic-card { padding: 22px 20px; }
+    .somatic-panel-head { align-items: flex-start; flex-direction: column; }
+    .somatic-drive {
+      grid-template-columns: 64px 1fr 42px;
+      gap: 10px;
+    }
+    .somatic-drive-name { font-size: 15px; }
   }
 </style>
 </head>
@@ -667,17 +874,40 @@
 </div>
 
 <div class="content" id="somatic-view" style="display:none">
-  <div style="max-width:680px;margin:0 auto;">
-    <div id="somatic-head" style="text-align:center;margin:8px 0 20px;">
-      <div style="font-size:13px;letter-spacing:2px;color:var(--text-dim);">KELO SOMATIC FIELD</div>
-      <h2 style="margin:6px 0;color:var(--accent);">珂洛此刻</h2>
-      <div id="somatic-feel" style="color:var(--text-dim);font-size:14px;">读取中…</div>
-    </div>
-    <div id="somatic-bars" style="display:grid;gap:9px;"></div>
-    <div id="somatic-thoughts" style="margin-top:22px;"></div>
-    <div style="text-align:center;margin-top:18px;">
-      <button class="btn-secondary" onclick="loadSomatic()">刷新心跳</button>
-    </div>
+  <div class="somatic-shell">
+    <section class="somatic-hero">
+      <div class="somatic-orb" id="somatic-icon">💗</div>
+      <div>
+        <div class="somatic-kicker">此刻的 feel</div>
+        <div id="somatic-feel">
+          <div class="somatic-feel-main">
+            <span class="somatic-dominant">读取中…</span>
+          </div>
+        </div>
+        <div class="somatic-trigger" id="somatic-trigger"></div>
+      </div>
+    </section>
+
+    <section class="somatic-card somatic-want-card">
+      <div>
+        <div class="somatic-want-label">此刻最想...</div>
+        <div class="somatic-want-text" id="somatic-want">等心跳回来</div>
+      </div>
+      <div class="somatic-want-pill" id="somatic-summon-pill">召唤力 --%</div>
+    </section>
+
+    <section class="somatic-card">
+      <div class="somatic-panel-head">
+        <div>
+          <div class="somatic-panel-label">此刻的驱动</div>
+          <div class="somatic-panel-title">Kelo Somatic Field</div>
+        </div>
+        <button class="btn-secondary" onclick="loadSomatic()">刷新心跳</button>
+      </div>
+      <div id="somatic-bars" class="somatic-drive-list"></div>
+    </section>
+
+    <section class="somatic-card" id="somatic-thoughts"></section>
   </div>
 </div>
 
@@ -1080,8 +1310,24 @@ const SOMATIC_COLORS = {
   curiosity:'#8FC0E0', reflection:'#B9B4D8', duty:'#9FC9A8', social:'#F3D36B', play:'#F0C4A0',
   contentment:'#C9D8A0', jealousy:'#D06A6A', stress:'#E0975F', fatigue:'#B0A590'
 };
+const SOMATIC_LABELS = {
+  attachment:'依恋', intimacy:'亲密', longing:'想念', possess:'占有', craving:'渴求',
+  greedy:'贪恋', preference:'偏爱', shyness:'羞怯', indulgence:'放纵', protect:'守护',
+  curiosity:'好奇', reflection:'回味', duty:'责任', social:'社交', play:'玩闹',
+  contentment:'安心', jealousy:'吃醋', stress:'压力', fatigue:'疲惫'
+};
+const SOMATIC_ICONS = {
+  attachment:'🌿', intimacy:'💞', longing:'🌙', possess:'🫳', craving:'💗',
+  greedy:'🍯', preference:'🎀', shyness:'🌸', indulgence:'🫠', protect:'🛡',
+  curiosity:'🔭', reflection:'📖', duty:'🪶', social:'💬', play:'✨',
+  contentment:'🫧', jealousy:'🍋', stress:'🌀', fatigue:'🌘'
+};
 async function loadSomatic() {
   const feelEl = document.getElementById('somatic-feel');
+  const triggerEl = document.getElementById('somatic-trigger');
+  const wantEl = document.getElementById('somatic-want');
+  const summonEl = document.getElementById('somatic-summon-pill');
+  const iconEl = document.getElementById('somatic-icon');
   const barsEl = document.getElementById('somatic-bars');
   const thEl = document.getElementById('somatic-thoughts');
   try {
@@ -1089,36 +1335,63 @@ async function loadSomatic() {
     const data = await r.json();
     const s = data.state;
     if (!s || !s.drives) {
-      feelEl.textContent = '还没有状态——让珂洛 feel 一次，或用 somatic_digest 喂一段。';
-      barsEl.innerHTML = ''; thEl.innerHTML = '';
+      iconEl.textContent = '💗';
+      feelEl.innerHTML = '<div class="somatic-feel-main"><span class="somatic-dominant">尚未初始化</span></div>' +
+        '<div class="somatic-summon">让珂洛 feel 一次，或用 somatic_digest 喂一段。</div>';
+      triggerEl.textContent = '';
+      wantEl.textContent = '等第一下心跳';
+      summonEl.textContent = '召唤力 --%';
+      barsEl.innerHTML = '<div class="somatic-thought"><div class="somatic-thought-meta">还没有驱动数据。等 somatic_feel 或 somatic_digest 喂进第一段经历后，这里会展开 19 个驱动条。</div></div>';
+      thEl.innerHTML = '<div class="somatic-panel-label">心里的念头 · 0</div>' +
+        '<div class="somatic-panel-title">Thought Pool</div>' +
+        '<div class="somatic-thought-list" style="margin-top:16px;">' +
+        '<div class="somatic-thought"><div class="somatic-thought-meta">还没有念头。被反复点到的经历会沉淀成执念，把欲望顶高。</div></div>' +
+        '</div>';
       return;
     }
-    feelEl.innerHTML = `当前倾向 <b style="color:var(--accent)">${s.dominantLabel}</b>（${s.feelTone}） · 召唤力 ${s.summon}%<br>` +
-      `<span style="font-size:13px;">此刻最想：${s.want}</span><br>` +
-      `<span style="font-size:12px;color:var(--text-light);">${s.triggerReason||''}</span>`;
-    const order = (s.topDrives||[]).map(d=>d.key);
+    const dominant = (s.topDrives && s.topDrives[0] && s.topDrives[0].key) || '';
+    const dominantLabel = esc(s.dominantLabel || SOMATIC_LABELS[dominant] || '未知');
+    const tone = esc(s.feelTone || '平和');
+    const summon = Number.isFinite(Number(s.summon)) ? Math.round(Number(s.summon)) : 0;
+    iconEl.textContent = SOMATIC_ICONS[dominant] || '💗';
+    feelEl.innerHTML = `<div class="somatic-feel-main">
+        <span class="somatic-dominant">当前倾向 ${dominantLabel}</span>
+        <span class="somatic-tone">${tone}</span>
+      </div>
+      <div class="somatic-summon">召唤力 <b>${summon}%</b></div>`;
+    triggerEl.textContent = s.triggerReason || '';
+    wantEl.textContent = s.want || '想靠近一点';
+    summonEl.textContent = `召唤力 ${summon}%`;
     const all = Object.keys(s.drives).sort((a,b)=> (s.drives[b]||0)-(s.drives[a]||0));
     barsEl.innerHTML = all.map(k => {
       const v = s.drives[k]||0; const c = SOMATIC_COLORS[k]||'#B0A590';
-      const label = ({attachment:'依恋',intimacy:'亲密',longing:'想念',possess:'占有',craving:'渴求',greedy:'贪恋',preference:'偏爱',shyness:'羞怯',indulgence:'放纵',protect:'守护',curiosity:'好奇',reflection:'回味',duty:'责任',social:'社交',play:'玩闹',contentment:'安心',jealousy:'吃醋',stress:'压力',fatigue:'疲惫'})[k]||k;
-      return `<div style="display:flex;align-items:center;gap:10px;">
-        <span style="width:48px;font-size:13px;color:var(--text-dim);">${label}</span>
-        <div style="flex:1;height:12px;border-radius:8px;background:rgba(180,165,140,0.18);overflow:hidden;">
-          <div style="width:${v}%;height:100%;border-radius:8px;background:${c};"></div></div>
-        <span style="width:34px;text-align:right;font-size:12px;color:var(--text-dim);">${(v/100).toFixed(2)}</span>
+      const label = SOMATIC_LABELS[k]||k;
+      return `<div class="somatic-drive">
+        <span class="somatic-drive-name">${SOMATIC_ICONS[k] || '•'} ${esc(label)}</span>
+        <div class="somatic-drive-track">
+          <div class="somatic-drive-fill" style="width:${v}%;--drive-color:${c};"></div>
+        </div>
+        <span class="somatic-drive-value">${Math.round(v)}</span>
       </div>`;
     }).join('');
     const ths = s.thoughts||[];
-    thEl.innerHTML = '<div style="font-size:13px;color:var(--text-dim);margin-bottom:8px;">心理念头 · ' + ths.length + '</div>' +
+    thEl.innerHTML = '<div class="somatic-panel-label">心里的念头 · ' + ths.length + '</div>' +
+      '<div class="somatic-panel-title">Thought Pool</div>' +
+      '<div class="somatic-thought-list" style="margin-top:16px;">' +
       (ths.length ? ths.slice().sort((a,b)=>(b.kind==='fixation')-(a.kind==='fixation')||b.strength-a.strength).map(t=>{
         const isFix = t.kind==='fixation';
-        const dl = ({attachment:'依恋',intimacy:'亲密',longing:'想念',possess:'占有',craving:'渴求',greedy:'贪恋',preference:'偏爱',shyness:'羞怯',indulgence:'放纵',protect:'守护',curiosity:'好奇',reflection:'回味',duty:'责任',social:'社交',play:'玩闹',contentment:'安心',jealousy:'吃醋',stress:'压力',fatigue:'疲惫'})[t.drive]||t.drive;
-        return `<div style="padding:10px 12px;margin-bottom:7px;border-radius:10px;background:var(--card,rgba(255,255,255,0.5));border:1px solid ${isFix?'#D06A6A55':'var(--border)'};">
-          <div style="font-size:14px;color:var(--text);">${t.text} <span style="font-size:10px;color:${isFix?'#D06A6A':'var(--text-light)'};font-weight:700;">${isFix?'执念':'闪念'}</span></div>
-          <div style="font-size:11px;color:var(--text-light);">挂在「${dl}」· 强度 ${t.strength}</div></div>`;
-      }).join('') : '<div style="font-size:13px;color:var(--text-light);">还没有念头。被反复点到的经历会沉淀成执念，把欲望顶高。</div>');
+        const dl = SOMATIC_LABELS[t.drive]||t.drive;
+        return `<div class="somatic-thought ${isFix?'is-fixation':''}">
+          <div class="somatic-thought-text">${esc(t.text)}
+            <span class="somatic-thought-tag" style="color:${isFix?'#D06A6A':'var(--text-light)'};">${isFix?'执念':'闪念'}</span>
+          </div>
+          <div class="somatic-thought-meta">挂在「${esc(dl)}」 · 强度 ${esc(String(t.strength))}</div>
+        </div>`;
+      }).join('') : '<div class="somatic-thought"><div class="somatic-thought-meta">还没有念头。被反复点到的经历会沉淀成执念，把欲望顶高。</div></div>') +
+      '</div>';
   } catch(e) {
-    feelEl.textContent = '读取失败：' + e;
+    feelEl.innerHTML = '<div class="somatic-feel-main"><span class="somatic-dominant">读取失败</span></div>';
+    triggerEl.textContent = String(e);
   }
 }
 
