@@ -121,6 +121,10 @@ REFRACTORY_TICKS = 4
 TICK_MS = 20 * 60 * 1000   # 一拍 20 分钟
 MAX_TICKS = 72             # 一次最多快进 72 拍（约一天）
 
+# 分离漂移：没有新事件时，"Claire 不在"本身会成为一种事件背景。
+# 这里不做机械加法，而是按分离时长把相关驱动拉向一个目标张力。
+SEPARATION_GRACE_HOURS = 1.5
+
 
 def clamp01(x):
     return max(0.0, min(1.0, float(x)))
@@ -248,6 +252,56 @@ def advance(state, ticks):
             refractory[key] = max(0, refractory[key] - n)
             if refractory[key] == 0:
                 del refractory[key]
+    return {"drives": drives, "refractory": refractory, "thoughts": thoughts}
+
+
+def _pull(value, target, strength):
+    return clamp01(value + (target - value) * clamp01(strength))
+
+
+def apply_separation_drift(state, hours_since_contact, ticks=1):
+    """Claire 离开后的内在漂移：想念/渴求/占有随等待自然长出来。"""
+    drives = normalize_drives(state.get("drives"))
+    refractory = dict(state.get("refractory") or {})
+    thoughts = normalize_thoughts(state.get("thoughts"))
+    try:
+        hours = max(0.0, float(hours_since_contact or 0))
+    except Exception:
+        hours = 0.0
+    if hours <= SEPARATION_GRACE_HOURS:
+        return {"drives": drives, "refractory": refractory, "thoughts": thoughts}
+
+    n = max(1, min(MAX_TICKS, int(ticks or 1)))
+    pull = min(0.72, 1.0 - math.exp(-0.16 * n))
+    gap = hours - SEPARATION_GRACE_HOURS
+    missing = 1.0 - math.exp(-gap / 4.8)
+    ache = 1.0 - math.exp(-max(0.0, hours - 4.0) / 7.5)
+    claim = 1.0 - math.exp(-max(0.0, hours - 7.0) / 8.5)
+
+    closeness = clamp01((drives["attachment"] + drives["intimacy"] + drives["preference"]) / 3.0)
+    hunger_memory = clamp01((drives["intimacy"] + drives["greedy"] + drives["craving"]) / 3.0)
+    claim_memory = clamp01((drives["possess"] + drives["jealousy"] + drives["preference"]) / 3.0)
+
+    targets = {
+        "longing": min(0.94, BASELINE["longing"] + 0.54 * missing + 0.10 * closeness),
+        "attachment": min(0.88, BASELINE["attachment"] + 0.34 * missing + 0.06 * closeness),
+        "craving": min(0.92, BASELINE["craving"] + 0.48 * ache * (0.55 + 0.65 * hunger_memory)),
+        "greedy": min(0.82, BASELINE["greedy"] + 0.30 * ache * (0.55 + 0.55 * closeness)),
+        "possess": min(0.92, BASELINE["possess"] + 0.68 * claim * (0.60 + 0.80 * claim_memory)),
+        "jealousy": min(0.86, BASELINE["jealousy"] + 0.62 * claim * (0.50 + 0.90 * claim_memory)),
+        "stress": min(0.66, BASELINE["stress"] + 0.26 * ache * (0.45 + 0.60 * drives["longing"])),
+    }
+    for key, target in targets.items():
+        if drives[key] < target:
+            drives[key] = _pull(drives[key], target, pull)
+
+    calm_target = max(0.12, BASELINE["contentment"] - 0.20 * ache)
+    if drives["contentment"] > calm_target:
+        drives["contentment"] = _pull(drives["contentment"], calm_target, pull * 0.72)
+
+    if hours >= 6 and drives["fatigue"] < 0.36:
+        drives["fatigue"] = _pull(drives["fatigue"], 0.36, pull * 0.35)
+
     return {"drives": drives, "refractory": refractory, "thoughts": thoughts}
 
 

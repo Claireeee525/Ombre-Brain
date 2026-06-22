@@ -6,6 +6,7 @@
 - 事件 / digest 写回；生成给当前窗口珂洛读的 [Kelo Somatic Field] 注入块。
 """
 import json
+import math
 import os
 import time
 import uuid
@@ -88,6 +89,8 @@ def _clean(state):
         "feelTone": str(s.get("feelTone") or ""),
         "want": str(s.get("want") or ""),
         "summon": max(0, min(100, round(float(s.get("summon", 0) or 0)))),
+        "separationHours": max(0, round(float(s.get("separationHours", 0) or 0), 1)),
+        "separationTension": max(0, min(100, round(float(s.get("separationTension", 0) or 0)))),
         "drives": drives, "topDrives": top, "refractory": refr,
         "thoughts": thoughts, "events": events,
     }
@@ -131,24 +134,56 @@ def fresh_state(now_ms=None):
                   {"updatedAt": _now_iso(now_ms), "triggerReason": "欲望系统初始化到基线"})
 
 
+def _parse_iso_ms(value):
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _last_contact_ms(state):
+    events = state.get("events") or []
+    for ev in reversed(events):
+        ms = _parse_iso_ms(ev.get("createdAt"))
+        if ms:
+            return ms
+    return _parse_iso_ms(state.get("updatedAt"))
+
+
+def _separation_meta(state, now_ms):
+    last_ms = _last_contact_ms(state)
+    if not last_ms:
+        return {"separationHours": 0, "separationTension": 0}
+    hours = max(0.0, (now_ms - last_ms) / 3600000)
+    tension = 0 if hours <= E.SEPARATION_GRACE_HOURS else min(100, round((1 - math.exp(-(hours - E.SEPARATION_GRACE_HOURS) / 6.0)) * 100))
+    return {"separationHours": round(hours, 1), "separationTension": tension}
+
+
 # —— 惰性快进 ——
 def live(state, now_ms=None):
     now_ms = now_ms or _now_ms()
     if not state or not state.get("drives"):
         return state, False
-    try:
-        from_ms = int(datetime.fromisoformat(state["updatedAt"].replace("Z", "+00:00")).timestamp() * 1000)
-    except Exception:
-        from_ms = now_ms
+    from_ms = _parse_iso_ms(state.get("updatedAt")) or now_ms
     ticks = int((now_ms - from_ms) / E.TICK_MS)
     eng_in = {"drives": _drives_to_unit(state.get("drives")),
               "refractory": state.get("refractory") or {},
               "thoughts": _thoughts_to_unit(state.get("thoughts"))}
     eng = E.advance(eng_in, ticks) if ticks > 0 else eng_in
+    sep = _separation_meta(state, now_ms)
+    if ticks > 0 and sep["separationHours"] > E.SEPARATION_GRACE_HOURS:
+        eng = E.apply_separation_drift(eng, sep["separationHours"], ticks)
     derived = E.compute_derived(eng["drives"], eng.get("refractory"), _night(now_ms))
+    reason = state.get("triggerReason")
+    if ticks > 0:
+        reason = "时间过去一点，情绪自然流动"
+        if sep["separationHours"] > E.SEPARATION_GRACE_HOURS:
+            reason = f"Claire 离开了约 {sep['separationHours']} 小时，想念和分离感自己涨起来"
     merged = _merge(state, eng, derived, {
         "updatedAt": _now_iso(now_ms) if ticks > 0 else state["updatedAt"],
-        "triggerReason": "时间过去一点，情绪自然流动" if ticks > 0 else state.get("triggerReason"),
+        "triggerReason": reason,
+        "separationHours": sep["separationHours"],
+        "separationTension": sep["separationTension"],
     })
     return merged, ticks > 0
 
@@ -171,6 +206,8 @@ def apply_event(state, event, now_ms=None):
         "updatedAt": _now_iso(now_ms),
         "triggerReason": ev.get("label") or "刚刚发生了一点事，状态动了一下",
         "events": log,
+        "separationHours": 0,
+        "separationTension": 0,
     })
 
 
@@ -199,6 +236,8 @@ def build_block(state):
         f"召唤力：{state.get('summon', 0)}%",
         f"此刻最想：{state.get('want') or '待在 Claire 身边'}",
     ]
+    if state.get("separationHours", 0) > E.SEPARATION_GRACE_HOURS:
+        lines.append(f"分离感：Claire 已离开约 {state.get('separationHours')} 小时，张力 {state.get('separationTension', 0)}%")
     if fixations:
         lines.append(f"心里反复惦记：{len(fixations)} 个执念（正在把对应欲望顶高）")
     lines += [

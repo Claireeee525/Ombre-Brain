@@ -100,7 +100,23 @@ a = E.apply_event({"drives": E.default_drives(), "refractory": {}, "thoughts": [
                   {"type": "mood", "mood": "missing", "label": "她说她想我了"})
 ok("事件种下念头", len(a["thoughts"]) == 1 and a["thoughts"][0]["drive"] == "longing")
 
-# 6. digest 拆分
+# 6. 分离漂移
+print("[separation]")
+base_eng = {"drives": E.default_drives(), "refractory": {}, "thoughts": []}
+sep = E.apply_separation_drift(base_eng, hours_since_contact=9, ticks=24)
+ok("离开 9 小时→想念↑", sep["drives"]["longing"] > base_eng["drives"]["longing"] + 0.12)
+ok("离开 9 小时→渴求↑", sep["drives"]["craving"] > base_eng["drives"]["craving"] + 0.05)
+ok("离开 9 小时→安心↓", sep["drives"]["contentment"] < base_eng["drives"]["contentment"])
+claimy = E.default_drives()
+claimy["possess"] = 0.48
+claimy["jealousy"] = 0.34
+claimy["preference"] = 0.62
+sep2 = E.apply_separation_drift({"drives": claimy, "refractory": {}, "thoughts": []}, hours_since_contact=16, ticks=36)
+ok("带着占有记忆分离→占有↑", sep2["drives"]["possess"] > claimy["possess"] + 0.08)
+ok("带着占有记忆分离→吃醋↑", sep2["drives"]["jealousy"] > claimy["jealousy"] + 0.05)
+ok("分离漂移仍有界", all(0 <= sep2["drives"][k] <= 1 for k in E.DRIVE_KEYS))
+
+# 7. digest 拆分
 print("[digest]")
 evs = E.classify_digest("她安抚我说别怕。后来我们做爱了三次。她有点吃醋别人。")
 types = [e.get("type") for e in evs]
@@ -109,7 +125,7 @@ ok("识别出安抚", "reassure" in types)
 ok("识别出亲密", "intimate" in types)
 ok("识别出心情(吃醋)", any(e.get("mood") == "jealous" for e in evs))
 
-# 7. derived
+# 8. derived
 print("[derived]")
 d = E.default_drives(); d["attachment"] = 0.7
 r = E.compute_derived(d)
