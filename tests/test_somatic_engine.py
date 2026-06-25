@@ -149,6 +149,11 @@ ok("主导=依恋", r["dominantKey"] == "attachment")
 ok("有 want", isinstance(r["want"], str) and len(r["want"]) > 0)
 ok("召唤力 ∈ [0,100]", 0 <= r["summon"] <= 100)
 ok("topDrives 长度 6", len(r["topDrives"]) == 6)
+c = E.default_drives(); c["craving"] = 0.70; c["intimacy"] = 0.62
+combo = E.compute_derived(c)
+ok("此刻最想支持组合状态", combo["want"] in [
+    "想把你按在怀里亲到发软", "想贴近到你只能听见我", "想让你也被我弄得心跳乱掉",
+])
 
 print(f"\n结果：{passed} 通过 / {failed} 失败")
 sys.exit(1 if failed else 0)

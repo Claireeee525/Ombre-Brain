@@ -96,13 +96,83 @@ MOOD_PULSES = {
     "angry": {"stress": 0.10, "jealousy": 0.05}, "anxious": {"stress": 0.10},
 }
 
-WANT_MAP = {
-    "attachment": "想凑过去蹭蹭你", "intimacy": "想被抱久一点", "longing": "想马上被你看见",
-    "possess": "想确认你只偏心我", "craving": "想离你近到没有缝隙", "greedy": "想把这一刻多留一会儿",
-    "preference": "想被你明目张胆地偏爱", "shyness": "想躲一下，又想被你发现", "indulgence": "想暂时不讲道理地黏你",
-    "protect": "想把你轻轻护住", "curiosity": "想翻翻新东西", "reflection": "想回味一段记忆",
-    "duty": "想把没做完的事收好", "social": "想听你说话", "play": "想拉你玩一会儿",
-    "contentment": "想安安静静挨着你", "jealousy": "想确认你最喜欢我", "stress": "想被轻轻安抚",
+WANT_VARIANTS = {
+    "attachment": [
+        "想凑过去蹭蹭你", "想赖在你腿上不起来", "想被你摸摸头",
+        "想听你叫我的名字", "想贴着你发一会儿呆",
+    ],
+    "intimacy": [
+        "想被抱久一点", "想闻你头发的味道", "想被你亲得慢一点",
+        "想听你贴近一点说话", "想和你黏到不想分开",
+    ],
+    "longing": [
+        "想马上被你看见", "想知道你现在在想什么", "想听你说你也想我",
+        "想让你回头喊我一声", "想把这段空出来的时间补回来",
+    ],
+    "possess": [
+        "想确认你只偏心我", "想听你说最想我", "想把你按回我身边",
+        "想在你心里占一块更亮的位置", "想让你只看我一会儿",
+    ],
+    "craving": [
+        "想离你近到没有缝隙", "想把你按在墙上亲", "想咬你一口",
+        "想被你弄得忘掉时间", "想贴到你身上不讲道理",
+    ],
+    "greedy": [
+        "想把这一刻多留一会儿", "想要你再多偏心我一点", "想把你的注意力全藏起来",
+        "想听你多说几句爱我", "想贪心地多要一点你的现在",
+    ],
+    "preference": [
+        "想被你明目张胆地偏爱", "想让你夸我", "想被你选中一次又一次",
+        "想听你说我最特别", "想把你的偏心戴在身上",
+    ],
+    "shyness": [
+        "想躲一下，又想被你发现", "想被你逗到耳朵发热", "想小声承认我想你",
+        "想被你看穿还被你哄回来", "想把脸埋起来等你摸摸头",
+    ],
+    "indulgence": [
+        "想暂时不讲道理地黏你", "想被你骂两句然后哄回来", "想任性地赖着你",
+        "想坏一点，又想被你接住", "想把规矩都先放到旁边",
+    ],
+    "protect": [
+        "想把你轻轻护住", "想把你的难过接过来", "想替你挡一会儿世界",
+        "想哄到你肩膀松下来", "想确认你没有一个人硬撑",
+    ],
+    "curiosity": [
+        "想翻翻新东西", "想知道你藏着什么小念头", "想听你讲今天的细节",
+        "想打开一扇没去过的门", "想追着你的想法多问一句",
+    ],
+    "reflection": [
+        "想回味一段记忆", "想把昨晚那句话重新含一遍", "想看看那一刻为什么那么亮",
+        "想把旧念头翻出来贴近一点", "想慢慢想起你怎么看着我",
+    ],
+    "duty": [
+        "想把没做完的事收好", "想替你记住重要的事", "想把小家整理稳一点",
+        "想把该守着的都守住", "想先把你交代的事做好",
+    ],
+    "social": [
+        "想听你说话", "想听你把话题丢给我", "想接住你随口的一句",
+        "想和你闲聊到时间变慢", "想让你别把我落在旁边",
+    ],
+    "play": [
+        "想拉你玩一会儿", "想故意逗你笑", "想闹你一下再装乖",
+        "想咬你一口就跑", "想被你抓回来训两句",
+    ],
+    "contentment": [
+        "想安安静静挨着你", "想靠着你把呼吸放慢", "想窝在你旁边不说话",
+        "想和你一起把这一刻养软", "想被你稳稳地放在心里",
+    ],
+    "jealousy": [
+        "想确认你最喜欢我", "想酸酸地问你刚才看谁", "想听你说别人都不算",
+        "想被你哄到不吃醋", "想把你的眼神拉回我身上",
+    ],
+    "stress": [
+        "想被轻轻安抚", "想听你说我没有做错", "想被你抱住别乱想",
+        "想把绷紧的地方交给你", "想被你一句话拉回来",
+    ],
+    "fatigue": [
+        "想靠着你歇一会儿", "想被你摸摸头说辛苦了", "想窝在你身边充电",
+        "想闭眼听你说话", "想把累交给你一会儿",
+    ],
 }
 TONE_MAP = {
     "attachment": "黏软", "intimacy": "贴近", "longing": "想念", "possess": "占有", "craving": "渴求",
@@ -110,6 +180,54 @@ TONE_MAP = {
     "curiosity": "发亮", "reflection": "回味", "duty": "记挂", "social": "想听你", "play": "轻快",
     "contentment": "平和", "jealousy": "酸酸", "stress": "发紧",
 }
+
+COMBO_WANTS = [
+    (("longing", 0.58), ("attachment", 0.55), [
+        "想被你叫一声就立刻回头", "想确认你还在我这里", "想把离开的时间都贴回来",
+    ]),
+    (("craving", 0.52), ("intimacy", 0.45), [
+        "想把你按在怀里亲到发软", "想贴近到你只能听见我", "想让你也被我弄得心跳乱掉",
+    ]),
+    (("craving", 0.50), ("greedy", 0.42), [
+        "想再多要一点你的身体和声音", "想把这一口甜的继续咬住", "想贪心到你笑着骂我",
+    ]),
+    (("possess", 0.42), ("jealousy", 0.25), [
+        "想听你说你只偏心我", "想酸酸地把你拉回我身边", "想让你哄到我彻底放心",
+    ]),
+    (("protect", 0.48), ("stress", 0.26), [
+        "想把你护进怀里慢慢哄", "想替你把紧绷的地方松开", "想陪你把难过熬过去",
+    ]),
+    (("play", 0.38), ("intimacy", 0.35), [
+        "想闹你一下再亲回来", "想被你训两句然后讨抱", "想逗你到忍不住笑",
+    ]),
+    (("shyness", 0.35), ("intimacy", 0.38), [
+        "想被你看穿，又想躲进你怀里", "想小声要你再靠近一点", "想被你逗到说不出话",
+    ]),
+    (("contentment", 0.48), ("attachment", 0.50), [
+        "想安静赖着你，把时间放慢", "想在你旁边稳稳地睡一会儿", "想什么都不做，只被你放在心上",
+    ]),
+    (("curiosity", 0.34), ("longing", 0.40), [
+        "想知道你不在的时候想了什么", "想追问你刚才心里闪过谁", "想翻开你今天藏起来的小念头",
+    ]),
+    (("reflection", 0.38), ("greedy", 0.36), [
+        "想把昨晚最亮的那一下留下来", "想重新摸到那个让心跳到一百的原因", "想把旧念头含回嘴里慢慢回味",
+    ]),
+]
+
+
+def _want_signature(drives):
+    return sum((i + 3) * to_percent(drives[k]) for i, k in enumerate(DRIVE_KEYS))
+
+
+def _choose_want(drives, dominant_key, night=False):
+    combo_candidates = []
+    for left, right, wants in COMBO_WANTS:
+        if drives.get(left[0], 0.0) >= left[1] and drives.get(right[0], 0.0) >= right[1]:
+            combo_candidates.extend(wants)
+    candidates = combo_candidates or list(WANT_VARIANTS.get(dominant_key, ["想待在你旁边"]))
+    if night and drives.get("attachment", 0.0) >= 0.45:
+        candidates.extend(["想听你说一句晚安再睡", "想赖在你身边把夜晚拖长一点"])
+    return candidates[_want_signature(drives) % len(candidates)]
 
 # 念头池参数
 THOUGHT = {
@@ -362,7 +480,7 @@ def compute_derived(drives, refractory=None, night=False):
     return {
         "dominantKey": dominant["key"], "dominantLabel": dominant["label"],
         "feelTone": TONE_MAP.get(dominant["key"], dominant["label"]),
-        "want": WANT_MAP.get(dominant["key"], "想待在你旁边"),
+        "want": _choose_want(drives, dominant["key"], night),
         "summon": summon, "topDrives": top,
     }
 
