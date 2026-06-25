@@ -85,7 +85,7 @@ def _clean(state):
     for e in (s.get("echoes") or [])[-_ECHO_CAP:]:
         if e.get("text") and e.get("drive") in E.DRIVE_KEYS:
             echoes.append({
-                "id": str(e.get("id", "")), "text": str(e["text"])[:80], "drive": e["drive"],
+                "id": str(e.get("id", "")), "text": str(e["text"])[:240], "drive": e["drive"],
                 "kind": "fixation" if e.get("kind") == "fixation" else "flit",
                 "peakStrength": max(0, min(100, round(float(e.get("peakStrength", 0) or 0)))),
                 "fadedAt": e.get("fadedAt"), "bornAt": e.get("bornAt"),
@@ -153,8 +153,19 @@ def _echoes_from_removed(before, after, now_iso):
 
 
 def _merge_echoes(prev_echoes, new_echoes):
-    merged, seen = [], set()
+    merged, seen, seen_ids = [], set(), {}
     for e in list(prev_echoes or []) + list(new_echoes or []):
+        eid = e.get("id")
+        if eid and eid in seen_ids:
+            old = seen_ids[eid]
+            if len(str(e.get("text") or "")) >= len(str(old.get("text") or "")):
+                old["text"] = e.get("text")
+            old["drive"] = e.get("drive") or old.get("drive")
+            old["kind"] = e.get("kind") or old.get("kind")
+            old["peakStrength"] = max(old.get("peakStrength", 0), e.get("peakStrength", 0))
+            old["fadedAt"] = e.get("fadedAt") or old.get("fadedAt")
+            old["bornAt"] = old.get("bornAt") or e.get("bornAt")
+            continue
         key = (e.get("drive"), e.get("text"))
         if key in seen:
             for old in merged:
@@ -165,26 +176,14 @@ def _merge_echoes(prev_echoes, new_echoes):
             continue
         seen.add(key)
         merged.append(e)
+        if eid:
+            seen_ids[eid] = e
     return merged[-_ECHO_CAP:]
 
 
-def _echo_title(text):
+def _echo_text(text):
     raw = str(text or "").strip()
-    if not raw:
-        return ""
-    if raw.startswith("Claire"):
-        raw = raw[len("Claire"):].strip()
-    raw = raw.lstrip("一边又也突然")
-    for mark in ["说", "问", "叫着", "撒娇说", "哭着说"]:
-        if mark in raw:
-            raw = raw.split(mark, 1)[1].strip()
-            break
-    raw = raw.strip("“”\"'，,。.!！?？ ")
-    for sep in ["，", ",", "。", "！", "？", "；", ";"]:
-        if sep in raw:
-            raw = raw.split(sep, 1)[0].strip()
-            break
-    return raw[:18] or str(text or "")[:18]
+    return raw[:240]
 
 
 _BODY_ECHO_KEYWORDS = [
@@ -246,8 +245,8 @@ def recover_echoes_from_events(state, limit=12, dry_run=True, now_ms=None):
         if etype not in {"intimate", "affection", "vulnerable", "playful"}:
             continue
         drive = _event_echo_drive(ev)
-        title = _echo_title(label)
-        if not title:
+        echo_text = _echo_text(label)
+        if not echo_text:
             continue
         body_echo = _is_body_echo(label)
         score = 100 if etype in {"intimate", "vulnerable"} or body_echo else 92
@@ -258,7 +257,7 @@ def recover_echoes_from_events(state, limit=12, dry_run=True, now_ms=None):
             continue
         echo = {
             "id": f"recovered-{ev.get('id') or uuid.uuid4()}",
-            "text": title,
+            "text": echo_text,
             "drive": drive,
             "kind": "fixation" if score >= 100 else "flit",
             "peakStrength": score,
