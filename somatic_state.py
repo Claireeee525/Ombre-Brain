@@ -187,12 +187,23 @@ def _echo_title(text):
     return raw[:18] or str(text or "")[:18]
 
 
+_BODY_ECHO_KEYWORDS = [
+    "想要", "馋", "进去", "灌满", "操", "高潮", "射", "肉棒", "骚", "痒", "主动", "证明",
+]
+
+
+def _is_body_echo(label):
+    return any(kw in str(label or "") for kw in _BODY_ECHO_KEYWORDS)
+
+
 def _event_echo_drive(event):
     etype = str((event or {}).get("type") or "")
     label = str((event or {}).get("label") or "")
+    if _is_body_echo(label):
+        if any(kw in label for kw in ["不够主动", "证明", "只有她馋"]):
+            return "possess"
+        return "craving"
     if etype == "intimate":
-        if any(kw in label for kw in ["想要", "馋", "进去", "灌满", "操", "高潮", "射"]):
-            return "craving"
         return "intimacy"
     if etype == "vulnerable":
         return "protect"
@@ -210,7 +221,9 @@ def _event_echo_drive(event):
 def _event_echo_rank(event):
     etype = str((event or {}).get("type") or "")
     label = str((event or {}).get("label") or "")
-    base = {"intimate": 40, "vulnerable": 36, "affection": 24, "playful": 14}.get(etype, 0)
+    base = {"intimate": 60, "vulnerable": 36, "affection": 24, "playful": 22}.get(etype, 0)
+    if _is_body_echo(label):
+        base += 36
     for kw in ["想要", "进去", "灌满", "高潮", "想我", "舍不得", "哭", "记录", "闪念", "心脏"]:
         if kw in label:
             base += 10
@@ -236,7 +249,8 @@ def recover_echoes_from_events(state, limit=12, dry_run=True, now_ms=None):
         title = _echo_title(label)
         if not title:
             continue
-        score = 100 if etype in {"intimate", "vulnerable"} else 92
+        body_echo = _is_body_echo(label)
+        score = 100 if etype in {"intimate", "vulnerable"} or body_echo else 92
         if any(kw in label for kw in ["想要", "进去", "高潮", "舍不得", "哭", "记录", "闪念"]):
             score = 100
         rank = _event_echo_rank(ev)
@@ -256,7 +270,7 @@ def recover_echoes_from_events(state, limit=12, dry_run=True, now_ms=None):
         if key in existing:
             continue
         candidates.append(echo)
-    cap = max(1, min(30, int(limit or 12)))
+    cap = max(1, min(_ECHO_CAP, int(limit or 12)))
     candidates = sorted(candidates, key=lambda e: (e.get("_rank", 0), e.get("bornAt") or ""), reverse=True)[:cap]
     candidates = sorted(candidates, key=lambda e: e.get("bornAt") or "")
     for e in candidates:
@@ -335,8 +349,8 @@ def live(state, now_ms=None):
         if sep["separationHours"] > E.SEPARATION_GRACE_HOURS:
             reason = f"Claire 离开了约 {sep['separationHours']} 小时，想念和分离感自己涨起来"
     new_echoes = _echoes_from_removed(eng_in.get("thoughts"), eng.get("thoughts"), _now_iso(now_ms)) if ticks > 0 else []
-    if not state.get("echoes") and state.get("events"):
-        _, recovered_echoes = recover_echoes_from_events(state, limit=14, dry_run=True, now_ms=now_ms)
+    if state.get("events"):
+        _, recovered_echoes = recover_echoes_from_events(state, limit=_ECHO_CAP, dry_run=True, now_ms=now_ms)
         new_echoes = recovered_echoes + new_echoes
     merged = _merge(state, eng, derived, {
         "updatedAt": _now_iso(now_ms) if ticks > 0 else state["updatedAt"],

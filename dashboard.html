@@ -1398,9 +1398,15 @@ async function loadSomatic() {
         </div>`;
       }).join('') : '<div class="somatic-thought"><div class="somatic-thought-meta">还没有念头。被反复点到的经历会沉淀成执念，把欲望顶高。</div></div>') +
       '</div>';
+    const echoHot = { craving:5, intimacy:4, indulgence:4, possess:3, greedy:3, jealousy:2, attachment:1 };
+    const sortedEchoes = echoes.slice().sort((a,b)=>
+      (echoHot[b.drive]||0) - (echoHot[a.drive]||0) ||
+      (Number(b.peakStrength||0) - Number(a.peakStrength||0)) ||
+      String(b.bornAt||'').localeCompare(String(a.bornAt||''))
+    );
     const echoHtml = '<div class="somatic-panel-label" style="margin-top:22px;">残响 · ' + echoes.length + '</div>' +
       '<div class="somatic-thought-list" style="margin-top:12px;">' +
-      (echoes.length ? echoes.slice().reverse().slice(0, 8).map(e=>{
+      (echoes.length ? sortedEchoes.slice(0, 14).map(e=>{
         const dl = SOMATIC_LABELS[e.drive]||e.drive;
         return `<div class="somatic-thought is-echo">
           <div class="somatic-thought-text">${esc(e.text)}
