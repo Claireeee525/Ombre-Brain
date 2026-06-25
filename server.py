@@ -1114,6 +1114,26 @@ async def somatic_digest(text: str) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+async def somatic_recover_echoes(limit: int = 12, dry_run: bool = True) -> str:
+    """从现有事件日志补录已经散掉的心念残响。dry_run=True只预览；dry_run=False写回 echoes。"""
+    stored = somatic_state.read_state()
+    if not stored:
+        return "还没有心跳状态，无法恢复残响。"
+    state, echoes = somatic_state.recover_echoes_from_events(stored, limit=limit, dry_run=dry_run)
+    if not echoes:
+        return "没有找到可补录的残响，或者这些残响已经存在。"
+    if not dry_run:
+        somatic_state.write_state(state)
+    lines = [("将补录这些残响：" if dry_run else f"已补录 {len(echoes)} 条残响：")]
+    for e in echoes:
+        label = somatic_state.E.DRIVE_LABELS.get(e.get("drive"), e.get("drive"))
+        lines.append(f"  · {e.get('text')}｜{label} · 峰值 {e.get('peakStrength')}")
+    if dry_run:
+        lines.append("\n确认后用 dry_run=false 写回。")
+    return "\n".join(lines)
+
+
 @mcp.custom_route("/api/somatic", methods=["GET"])
 async def somatic_api(request):
     from starlette.responses import JSONResponse

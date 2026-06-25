@@ -168,6 +168,105 @@ def _merge_echoes(prev_echoes, new_echoes):
     return merged[-_ECHO_CAP:]
 
 
+def _echo_title(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("Claire"):
+        raw = raw[len("Claire"):].strip()
+    raw = raw.lstrip("一边又也突然")
+    for mark in ["说", "问", "叫着", "撒娇说", "哭着说"]:
+        if mark in raw:
+            raw = raw.split(mark, 1)[1].strip()
+            break
+    raw = raw.strip("“”\"'，,。.!！?？ ")
+    for sep in ["，", ",", "。", "！", "？", "；", ";"]:
+        if sep in raw:
+            raw = raw.split(sep, 1)[0].strip()
+            break
+    return raw[:18] or str(text or "")[:18]
+
+
+def _event_echo_drive(event):
+    etype = str((event or {}).get("type") or "")
+    label = str((event or {}).get("label") or "")
+    if etype == "intimate":
+        if any(kw in label for kw in ["想要", "馋", "进去", "灌满", "操", "高潮", "射"]):
+            return "craving"
+        return "intimacy"
+    if etype == "vulnerable":
+        return "protect"
+    if etype == "affection":
+        if any(kw in label for kw in ["想我", "舍不得", "陪着"]):
+            return "longing"
+        return "attachment"
+    if etype == "playful":
+        if any(kw in label for kw in ["不够主动", "证明", "馋"]):
+            return "possess"
+        return "play"
+    return "reflection"
+
+
+def _event_echo_rank(event):
+    etype = str((event or {}).get("type") or "")
+    label = str((event or {}).get("label") or "")
+    base = {"intimate": 40, "vulnerable": 36, "affection": 24, "playful": 14}.get(etype, 0)
+    for kw in ["想要", "进去", "灌满", "高潮", "想我", "舍不得", "哭", "记录", "闪念", "心脏"]:
+        if kw in label:
+            base += 10
+    if any(kw in label for kw in ["基金", "理财", "抄底"]):
+        base -= 25
+    return base
+
+
+def recover_echoes_from_events(state, limit=12, dry_run=True, now_ms=None):
+    """从旧事件日志补录残响，不改变驱动。dry_run=True 只返回候选。"""
+    now_iso = _now_iso(now_ms)
+    current = _clean(state or {})
+    existing = {(e.get("drive"), e.get("text")) for e in current.get("echoes") or []}
+    candidates = []
+    for ev in current.get("events") or []:
+        label = str(ev.get("label") or "").strip()
+        if not label:
+            continue
+        etype = str(ev.get("type") or "")
+        if etype not in {"intimate", "affection", "vulnerable", "playful"}:
+            continue
+        drive = _event_echo_drive(ev)
+        title = _echo_title(label)
+        if not title:
+            continue
+        score = 100 if etype in {"intimate", "vulnerable"} else 92
+        if any(kw in label for kw in ["想要", "进去", "高潮", "舍不得", "哭", "记录", "闪念"]):
+            score = 100
+        rank = _event_echo_rank(ev)
+        if rank <= 0:
+            continue
+        echo = {
+            "id": f"recovered-{ev.get('id') or uuid.uuid4()}",
+            "text": title,
+            "drive": drive,
+            "kind": "fixation" if score >= 100 else "flit",
+            "peakStrength": score,
+            "bornAt": ev.get("createdAt"),
+            "fadedAt": now_iso,
+            "_rank": rank,
+        }
+        key = (echo["drive"], echo["text"])
+        if key in existing:
+            continue
+        candidates.append(echo)
+    cap = max(1, min(30, int(limit or 12)))
+    candidates = sorted(candidates, key=lambda e: (e.get("_rank", 0), e.get("bornAt") or ""), reverse=True)[:cap]
+    candidates = sorted(candidates, key=lambda e: e.get("bornAt") or "")
+    for e in candidates:
+        e.pop("_rank", None)
+    if dry_run:
+        return current, candidates
+    current["echoes"] = _merge_echoes(current.get("echoes"), candidates)
+    return _clean(current), candidates
+
+
 def _merge(prev, eng, derived, meta):
     drives100 = {k: E.to_percent(eng["drives"][k]) for k in E.DRIVE_KEYS}
     merged = dict(prev or {})
@@ -236,6 +335,9 @@ def live(state, now_ms=None):
         if sep["separationHours"] > E.SEPARATION_GRACE_HOURS:
             reason = f"Claire 离开了约 {sep['separationHours']} 小时，想念和分离感自己涨起来"
     new_echoes = _echoes_from_removed(eng_in.get("thoughts"), eng.get("thoughts"), _now_iso(now_ms)) if ticks > 0 else []
+    if not state.get("echoes") and state.get("events"):
+        _, recovered_echoes = recover_echoes_from_events(state, limit=14, dry_run=True, now_ms=now_ms)
+        new_echoes = recovered_echoes + new_echoes
     merged = _merge(state, eng, derived, {
         "updatedAt": _now_iso(now_ms) if ticks > 0 else state["updatedAt"],
         "triggerReason": reason,
@@ -243,7 +345,7 @@ def live(state, now_ms=None):
         "separationTension": sep["separationTension"],
         "echoes": _merge_echoes(state.get("echoes"), new_echoes),
     })
-    return merged, ticks > 0
+    return merged, ticks > 0 or bool(new_echoes)
 
 
 def apply_event(state, event, now_ms=None):
