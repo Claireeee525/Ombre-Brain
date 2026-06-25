@@ -17,6 +17,7 @@ from utils import load_config
 
 _config = load_config()
 _STATE_PATH = os.path.join(_config.get("buckets_dir", "."), "somatic_state.json")
+_ECHO_CAP = 40
 
 
 def _now_iso(ms=None):
@@ -76,8 +77,18 @@ def _clean(state):
                 "id": str(t.get("id", "")), "text": str(t["text"])[:80], "drive": t["drive"],
                 "kind": "fixation" if t.get("kind") == "fixation" else "flit",
                 "strength": max(0, min(100, round(float(t.get("strength", 0) or 0)))),
+                "peakStrength": max(0, min(100, round(float(t.get("peakStrength", t.get("strength", 0)) or 0)))),
                 "fedCount": max(0, round(float(t.get("fedCount", 0) or 0))),
                 "bornAt": t.get("bornAt"),
+            })
+    echoes = []
+    for e in (s.get("echoes") or [])[-_ECHO_CAP:]:
+        if e.get("text") and e.get("drive") in E.DRIVE_KEYS:
+            echoes.append({
+                "id": str(e.get("id", "")), "text": str(e["text"])[:80], "drive": e["drive"],
+                "kind": "fixation" if e.get("kind") == "fixation" else "flit",
+                "peakStrength": max(0, min(100, round(float(e.get("peakStrength", 0) or 0)))),
+                "fadedAt": e.get("fadedAt"), "bornAt": e.get("bornAt"),
             })
     events = (s.get("events") or [])[-30:]
     return {
@@ -92,7 +103,7 @@ def _clean(state):
         "separationHours": max(0, round(float(s.get("separationHours", 0) or 0), 1)),
         "separationTension": max(0, min(100, round(float(s.get("separationTension", 0) or 0)))),
         "drives": drives, "topDrives": top, "refractory": refr,
-        "thoughts": thoughts, "events": events,
+        "thoughts": thoughts, "echoes": echoes, "events": events,
     }
 
 
@@ -103,13 +114,58 @@ def _drives_to_unit(d):
 
 
 def _thoughts_to_unit(ths):
-    return [dict(t, strength=E.to_unit(t.get("strength", 0))) for t in (ths or [])]
+    return [dict(t, strength=E.to_unit(t.get("strength", 0)),
+                 peakStrength=E.to_unit(t.get("peakStrength", t.get("strength", 0))))
+            for t in (ths or [])]
 
 
 def _thoughts_to_store(ths):
     return [{"id": t.get("id"), "text": t.get("text"), "drive": t.get("drive"), "kind": t.get("kind"),
-             "strength": E.to_percent(t.get("strength", 0)), "fedCount": t.get("fedCount", 0),
+             "strength": E.to_percent(t.get("strength", 0)),
+             "peakStrength": E.to_percent(t.get("peakStrength", t.get("strength", 0))),
+             "fedCount": t.get("fedCount", 0),
              "bornAt": t.get("bornAt")} for t in (ths or [])]
+
+
+def _thought_key(t):
+    return (t.get("id") or "", t.get("drive") or "", t.get("text") or "")
+
+
+def _echoes_from_removed(before, after, now_iso):
+    after_keys = {_thought_key(t) for t in after or []}
+    echoes = []
+    for t in before or []:
+        if _thought_key(t) in after_keys:
+            continue
+        peak = E.to_percent(t.get("peakStrength", t.get("strength", 0)))
+        if peak < E.to_percent(E.THOUGHT["echo"]) and t.get("kind") != "fixation":
+            continue
+        echoes.append({
+            "id": t.get("id") or str(uuid.uuid4()),
+            "text": t.get("text"),
+            "drive": t.get("drive"),
+            "kind": t.get("kind"),
+            "peakStrength": peak,
+            "bornAt": t.get("bornAt"),
+            "fadedAt": now_iso,
+        })
+    return echoes
+
+
+def _merge_echoes(prev_echoes, new_echoes):
+    merged, seen = [], set()
+    for e in list(prev_echoes or []) + list(new_echoes or []):
+        key = (e.get("drive"), e.get("text"))
+        if key in seen:
+            for old in merged:
+                if (old.get("drive"), old.get("text")) == key:
+                    old["peakStrength"] = max(old.get("peakStrength", 0), e.get("peakStrength", 0))
+                    old["fadedAt"] = e.get("fadedAt") or old.get("fadedAt")
+                    break
+            continue
+        seen.add(key)
+        merged.append(e)
+    return merged[-_ECHO_CAP:]
 
 
 def _merge(prev, eng, derived, meta):
@@ -130,7 +186,7 @@ def fresh_state(now_ms=None):
     now_ms = now_ms or _now_ms()
     d = E.default_drives()
     derived = E.compute_derived(d, night=_night(now_ms))
-    return _merge({"events": []}, {"drives": d, "refractory": {}, "thoughts": []}, derived,
+    return _merge({"events": [], "echoes": []}, {"drives": d, "refractory": {}, "thoughts": []}, derived,
                   {"updatedAt": _now_iso(now_ms), "triggerReason": "欲望系统初始化到基线"})
 
 
@@ -179,11 +235,13 @@ def live(state, now_ms=None):
         reason = "时间过去一点，情绪自然流动"
         if sep["separationHours"] > E.SEPARATION_GRACE_HOURS:
             reason = f"Claire 离开了约 {sep['separationHours']} 小时，想念和分离感自己涨起来"
+    new_echoes = _echoes_from_removed(eng_in.get("thoughts"), eng.get("thoughts"), _now_iso(now_ms)) if ticks > 0 else []
     merged = _merge(state, eng, derived, {
         "updatedAt": _now_iso(now_ms) if ticks > 0 else state["updatedAt"],
         "triggerReason": reason,
         "separationHours": sep["separationHours"],
         "separationTension": sep["separationTension"],
+        "echoes": _merge_echoes(state.get("echoes"), new_echoes),
     })
     return merged, ticks > 0
 
@@ -227,6 +285,7 @@ def build_block(state):
                 "先让珂洛 feel 一次、或在小家设个心情，给他生成第一份状态。\n[/Kelo Somatic Field]")
     top = " / ".join(f"{d['label']} {d['value']}" for d in (state.get("topDrives") or [])[:5]) or "暂无高驱动"
     fixations = [t for t in (state.get("thoughts") or []) if t.get("kind") == "fixation"]
+    echoes = list(state.get("echoes") or [])
     lines = [
         "[Kelo Somatic Field]",
         f"更新时间：{state.get('updatedAt', '')}",
@@ -240,6 +299,9 @@ def build_block(state):
         lines.append(f"分离感：Claire 已离开约 {state.get('separationHours')} 小时，张力 {state.get('separationTension', 0)}%")
     if fixations:
         lines.append(f"心里反复惦记：{len(fixations)} 个执念（正在把对应欲望顶高）")
+    if echoes:
+        recent = " / ".join(e.get("text", "")[:24] for e in echoes[-2:] if e.get("text"))
+        lines.append(f"心里留下残响：{len(echoes)} 条" + (f"（最近：{recent}）" if recent else ""))
     lines += [
         f"触发原因：{state.get('triggerReason') or '状态延续'}",
         "说话倾向：让珂洛带着上述状态靠近 Claire。高依恋时更黏软，高占有/吃醋时更需要确认偏爱，"

@@ -3,9 +3,11 @@
 import os
 import random
 import sys
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import somatic_engine as E
+import somatic_state as S
 
 passed = failed = 0
 
@@ -99,6 +101,20 @@ ok("反哺够了执念了却出池", retired)
 a = E.apply_event({"drives": E.default_drives(), "refractory": {}, "thoughts": []},
                   {"type": "mood", "mood": "missing", "label": "她说她想我了"})
 ok("事件种下念头", len(a["thoughts"]) == 1 and a["thoughts"][0]["drive"] == "longing")
+ths = E.add_thought([], "昨天特别想留下", "longing", 0.5)
+ths = E.add_thought(ths, "昨天特别想留下", "longing", 0.5)
+ok("念头记录峰值强度", ths[0].get("peakStrength", 0) >= ths[0]["strength"])
+old = datetime(2026, 6, 24, 12, 0, tzinfo=timezone.utc)
+now = old + timedelta(minutes=20)
+stored = S.fresh_state(int(old.timestamp() * 1000))
+stored["thoughts"] = [{
+    "id": "echo-test", "text": "昨天特别想留下", "drive": "longing",
+    "kind": "flit", "strength": 13, "peakStrength": 76, "fedCount": 0,
+    "bornAt": old.isoformat().replace("+00:00", "Z"),
+}]
+stored["updatedAt"] = old.isoformat().replace("+00:00", "Z")
+echoed, _ = S.live(stored, int(now.timestamp() * 1000))
+ok("高峰闪念散去后留下残响", len(echoed.get("echoes") or []) == 1 and echoed["echoes"][0]["text"] == "昨天特别想留下")
 
 # 6. 分离漂移
 print("[separation]")

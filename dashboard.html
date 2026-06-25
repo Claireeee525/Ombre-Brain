@@ -746,6 +746,10 @@
     border: 1px solid var(--border);
   }
   .somatic-thought.is-fixation { border-color: rgba(208,106,106,0.36); }
+  .somatic-thought.is-echo {
+    background: rgba(247,242,232,0.38);
+    border-color: rgba(180,165,140,0.18);
+  }
   .somatic-thought-text {
     color: var(--text);
     font-size: 14px;
@@ -1346,6 +1350,10 @@ async function loadSomatic() {
         '<div class="somatic-panel-title">Thought Pool</div>' +
         '<div class="somatic-thought-list" style="margin-top:16px;">' +
         '<div class="somatic-thought"><div class="somatic-thought-meta">还没有念头。被反复点到的经历会沉淀成执念，把欲望顶高。</div></div>' +
+        '</div>' +
+        '<div class="somatic-panel-label" style="margin-top:22px;">残响 · 0</div>' +
+        '<div class="somatic-thought-list" style="margin-top:12px;">' +
+        '<div class="somatic-thought is-echo"><div class="somatic-thought-meta">闪念散去前，会把够重的一下留成残响。</div></div>' +
         '</div>';
       return;
     }
@@ -1375,7 +1383,8 @@ async function loadSomatic() {
       </div>`;
     }).join('');
     const ths = s.thoughts||[];
-    thEl.innerHTML = '<div class="somatic-panel-label">心里的念头 · ' + ths.length + '</div>' +
+    const echoes = s.echoes||[];
+    const thoughtHtml = '<div class="somatic-panel-label">心里的念头 · ' + ths.length + '</div>' +
       '<div class="somatic-panel-title">Thought Pool</div>' +
       '<div class="somatic-thought-list" style="margin-top:16px;">' +
       (ths.length ? ths.slice().sort((a,b)=>(b.kind==='fixation')-(a.kind==='fixation')||b.strength-a.strength).map(t=>{
@@ -1389,6 +1398,19 @@ async function loadSomatic() {
         </div>`;
       }).join('') : '<div class="somatic-thought"><div class="somatic-thought-meta">还没有念头。被反复点到的经历会沉淀成执念，把欲望顶高。</div></div>') +
       '</div>';
+    const echoHtml = '<div class="somatic-panel-label" style="margin-top:22px;">残响 · ' + echoes.length + '</div>' +
+      '<div class="somatic-thought-list" style="margin-top:12px;">' +
+      (echoes.length ? echoes.slice().reverse().slice(0, 8).map(e=>{
+        const dl = SOMATIC_LABELS[e.drive]||e.drive;
+        return `<div class="somatic-thought is-echo">
+          <div class="somatic-thought-text">${esc(e.text)}
+            <span class="somatic-thought-tag" style="color:var(--text-light);">残响</span>
+          </div>
+          <div class="somatic-thought-meta">曾挂在「${esc(dl)}」 · 峰值 ${esc(String(e.peakStrength||0))}</div>
+        </div>`;
+      }).join('') : '<div class="somatic-thought is-echo"><div class="somatic-thought-meta">还没有残响。够重的闪念散去后，会在这里留下痕迹。</div></div>') +
+      '</div>';
+    thEl.innerHTML = thoughtHtml + echoHtml;
   } catch(e) {
     feelEl.innerHTML = '<div class="somatic-feel-main"><span class="somatic-dominant">读取失败</span></div>';
     triggerEl.textContent = String(e);

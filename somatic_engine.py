@@ -115,7 +115,7 @@ TONE_MAP = {
 THOUGHT = {
     "decay": 0.88, "gain": 1.10, "clear": 0.12, "promote": 0.80,
     "feed": 0.85, "feed_drive": 0.18, "relax": 0.70, "retire": 3,
-    "new_strength": 0.5, "retouch": 0.24, "cap": 20,
+    "new_strength": 0.5, "retouch": 0.24, "cap": 20, "echo": 0.42,
 }
 REFRACTORY_TICKS = 4
 TICK_MS = 20 * 60 * 1000   # 一拍 20 分钟
@@ -188,6 +188,7 @@ def normalize_thoughts(thoughts):
             "drive": t["drive"],
             "kind": "fixation" if t.get("kind") == "fixation" else "flit",
             "strength": clamp01(t.get("strength", 0)),
+            "peakStrength": clamp01(t.get("peakStrength", t.get("strength", 0))),
             "fedCount": max(0, round(t.get("fedCount", 0) or 0)),
             "bornAt": t.get("bornAt"),
         })
@@ -202,10 +203,12 @@ def add_thought(thoughts, text, drive, strength=None, now_iso=None):
     for t in lst:
         if t["drive"] == drive and t["text"] == norm:
             t["strength"] = clamp01(t["strength"] + THOUGHT["retouch"])  # 反复被点到→沉淀
+            t["peakStrength"] = max(t.get("peakStrength", 0), t["strength"])
             return lst
+    initial = clamp01(strength if strength is not None else THOUGHT["new_strength"])
     lst.append({
         "id": str(uuid.uuid4()), "text": norm, "drive": drive, "kind": "flit",
-        "strength": clamp01(strength if strength is not None else THOUGHT["new_strength"]),
+        "strength": initial, "peakStrength": initial,
         "fedCount": 0, "bornAt": now_iso,
     })
     if len(lst) > THOUGHT["cap"]:
@@ -220,12 +223,14 @@ def tick_thoughts(thoughts, drives):
         t = dict(t0)
         if t["kind"] == "flit":
             t["strength"] = clamp01(t["strength"] * THOUGHT["decay"])
+            t["peakStrength"] = max(t.get("peakStrength", 0), t["strength"])
             if t["strength"] >= THOUGHT["promote"]:
                 t["kind"] = "fixation"
             if t["strength"] < THOUGHT["clear"]:
                 continue
         else:  # fixation 执念
             t["strength"] = clamp01(t["strength"] * THOUGHT["gain"])
+            t["peakStrength"] = max(t.get("peakStrength", 0), t["strength"])
             if t["strength"] >= THOUGHT["feed"]:
                 out[t["drive"]] = pulse(out[t["drive"]], THOUGHT["feed_drive"])  # 反哺欲望
                 t["strength"] = clamp01(t["strength"] * THOUGHT["relax"])
