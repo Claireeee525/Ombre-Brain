@@ -1220,6 +1220,51 @@ async def family_rebuild_api(request):
     return JSONResponse(result)
 
 
+# --- 向量补录：给没有 embedding 的存量记忆补向量（后台跑，GET 轮询进度）---
+_backfill_job = {"running": False, "startedAt": None, "total": 0, "done": 0, "created": 0, "failed": 0, "note": ""}
+
+
+@mcp.custom_route("/api/family/backfill", methods=["POST", "GET"])
+async def family_backfill_api(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    if request.method == "GET":
+        return JSONResponse(_backfill_job)
+    if _backfill_job["running"]:
+        return JSONResponse({"ok": False, "note": "补录已在跑，用 GET 轮询进度。"})
+    if not embedding_engine.enabled:
+        return JSONResponse({"ok": False, "note": "embedding 引擎未启用（缺 API key），无法补向量。"})
+    import datetime as _dt
+    _backfill_job.update({"running": True, "startedAt": _dt.datetime.utcnow().isoformat(),
+                          "total": 0, "done": 0, "created": 0, "failed": 0, "note": "统计中"})
+
+    async def _run():
+        try:
+            buckets = await bucket_mgr.list_all(include_archive=False)
+            have = set(family_engine._load_vectors().keys())
+            todo = [b for b in buckets if b["id"] not in have and (b.get("content") or "").strip()]
+            _backfill_job["total"] = len(todo)
+            _backfill_job["note"] = "补录中"
+            for b in todo:
+                ok = await embedding_engine.generate_and_store(b["id"], b["content"])
+                _backfill_job["done"] += 1
+                if ok:
+                    _backfill_job["created"] += 1
+                else:
+                    _backfill_job["failed"] += 1
+                await asyncio.sleep(0.25)
+            _backfill_job["note"] = "完成"
+        except Exception as e:
+            logger.warning(f"Backfill job failed: {e}")
+            _backfill_job["note"] = f"失败: {e}"
+        finally:
+            _backfill_job["running"] = False
+
+    asyncio.get_running_loop().create_task(_run())
+    return JSONResponse({"ok": True, "started": True, "note": "已开始补向量，用 GET /api/family/backfill 看进度。"})
+
+
 # =============================================================
 # Tool 5: pulse — Heartbeat, system status + memory listing
 # 工具 5：pulse — 脉搏，系统状态 + 记忆列表
