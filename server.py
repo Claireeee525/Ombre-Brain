@@ -1178,7 +1178,9 @@ async def somatic_api(request):
 @mcp.custom_route("/api/nudge/status", methods=["GET"])
 async def nudge_status_api(request):
     from starlette.responses import JSONResponse
-    return JSONResponse(nudge_engine.status())
+    s = nudge_engine.status()
+    s["hookConfigured"] = bool(OMBRE_HOOK_URL)
+    return JSONResponse(s)
 
 
 @mcp.custom_route("/api/nudge/test", methods=["POST"])
@@ -2231,11 +2233,14 @@ if __name__ == "__main__":
             await asyncio.sleep(20)
             while True:
                 try:
-                    hit = nudge_engine.tick()
-                    if hit:
-                        await _fire_webhook("kelo_nudge", {"kind": hit["kind"]}, title=hit["title"], body_text=hit["body"])
-                        nudge_engine.mark_sent(hit["kind"])
-                        logger.info(f"Nudge sent ({hit['kind']}): {hit['body'][:48]}")
+                    if not OMBRE_HOOK_URL:
+                        pass  # 没配推送地址就不冒头也不记账，等配好了再发
+                    else:
+                        hit = nudge_engine.tick()
+                        if hit:
+                            await _fire_webhook("kelo_nudge", {"kind": hit["kind"]}, title=hit["title"], body_text=hit["body"])
+                            nudge_engine.mark_sent(hit["kind"])
+                            logger.info(f"Nudge sent ({hit['kind']}): {hit['body'][:48]}")
                 except Exception as e:
                     logger.warning(f"Nudge loop error: {e}")
                 await asyncio.sleep(60)
