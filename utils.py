@@ -122,7 +122,12 @@ def load_config(config_path: str = None) -> dict:
     # （没有它时 embedding 会回落到 dehydration 的 key——部署环境里那是 DeepSeek 的钥匙，敲不开 Google 的门）
     env_embed_api_key = os.environ.get("OMBRE_EMBEDDING_API_KEY", "")
     if env_embed_api_key:
-        config.setdefault("embedding", {})["api_key"] = env_embed_api_key
+        embed_cfg = config.setdefault("embedding", {})
+        embed_cfg["api_key"] = env_embed_api_key
+        # 设了专属钥匙但没设地址时，直接用 Google 官方地址，
+        # 免得回落到 dehydration 的 DeepSeek 地址（那里没有 embeddings 接口）
+        if not (embed_cfg.get("base_url") or "").strip():
+            embed_cfg["base_url"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
     # --- Ensure bucket storage directories exist ---
     # --- 确保记忆桶存储目录存在 ---
