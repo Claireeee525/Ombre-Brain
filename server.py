@@ -59,6 +59,7 @@ from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 import somatic_state
 import nudge_engine
+import family_engine
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -109,6 +110,11 @@ bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket 
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
+
+# --- 记忆家族：向量聚族 + 家族摘要（挂在 embedding 引擎的回调上）---
+family_engine.init(config, bucket_loader=bucket_mgr.get, dehydrator=dehydrator)
+embedding_engine.on_stored = family_engine.on_stored
+embedding_engine.on_deleted = family_engine.on_deleted
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -720,8 +726,27 @@ async def breath(
     except Exception as e:
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
+    # --- 记忆家族优先：同族命中≥3 且有摘要时，用"家族摘要+最相关2条原文"替代一堆碎片 ---
     results = []
     token_used = 0
+    try:
+        fams = family_engine.families_for([b["id"] for b in matches])
+        collapsed_ids = set()
+        for fam in fams.values():
+            if not fam.get("summary") or len(fam.get("hits", [])) < 3:
+                continue
+            keep = set(fam["hits"][:2])
+            collapsed_ids.update(set(fam["hits"]) - keep)
+            fam_text = f"[记忆家族: {fam.get('name') or '未命名'} · {fam['member_count']}条] {fam['summary']}"
+            fam_tokens = count_tokens_approx(fam_text)
+            if token_used + fam_tokens <= max_tokens:
+                results.append(fam_text)
+                token_used += fam_tokens
+        if collapsed_ids:
+            matches = [b for b in matches if b["id"] not in collapsed_ids]
+    except Exception as e:
+        logger.warning(f"Family assembly failed / 家族拼装失败: {e}")
+
     for bucket in matches:
         if token_used >= max_tokens:
             break
@@ -1167,6 +1192,30 @@ async def nudge_test_api(request):
     title, body = nudge_engine.compose("nudge", state, seed=str(time.time()))
     await _fire_webhook("kelo_nudge", {"kind": "test"}, title=title, body_text=body)
     return JSONResponse({"ok": True, "title": title, "body": body})
+
+
+@mcp.custom_route("/api/families", methods=["GET"])
+async def families_api(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    return JSONResponse({"status": family_engine.status(), "families": family_engine._rows()})
+
+
+@mcp.custom_route("/api/family/rebuild", methods=["POST"])
+async def family_rebuild_api(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    dry_run = bool(body.get("dry_run", True))
+    async def _meta_loader():
+        return await bucket_mgr.list_all(include_archive=False)
+    result = await family_engine.rebuild(dry_run=dry_run, bucket_meta_loader=_meta_loader, threshold=body.get("threshold"))
+    return JSONResponse(result)
 
 
 # =============================================================

@@ -58,6 +58,11 @@ class EmbeddingEngine:
         # --- Initialize SQLite ---
         self._init_db()
 
+        # --- Optional hooks (set by server.py): fired after store / delete ---
+        # --- 可选回调（server.py 注入）：向量入库后 / 删除后触发（记忆家族用）---
+        self.on_stored = None    # async fn(bucket_id, embedding, content)
+        self.on_deleted = None   # sync fn(bucket_id)
+
     def _init_db(self):
         """Create embeddings table if not exists."""
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -86,6 +91,11 @@ class EmbeddingEngine:
             if not embedding:
                 return False
             self._store_embedding(bucket_id, embedding)
+            if self.on_stored:
+                try:
+                    await self.on_stored(bucket_id, embedding, content)
+                except Exception as hook_err:
+                    logger.warning(f"on_stored hook failed for {bucket_id}: {hook_err}")
             return True
         except Exception as e:
             logger.warning(f"Embedding generation failed for {bucket_id}: {e}")
@@ -124,6 +134,11 @@ class EmbeddingEngine:
         conn.execute("DELETE FROM embeddings WHERE bucket_id = ?", (bucket_id,))
         conn.commit()
         conn.close()
+        if self.on_deleted:
+            try:
+                self.on_deleted(bucket_id)
+            except Exception as hook_err:
+                logger.warning(f"on_deleted hook failed for {bucket_id}: {hook_err}")
 
     async def get_embedding(self, bucket_id: str) -> list[float] | None:
         """Retrieve stored embedding for a bucket. Returns None if not found."""
