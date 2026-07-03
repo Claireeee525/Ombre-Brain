@@ -1202,11 +1202,13 @@ async def families_api(request):
     return JSONResponse({"status": family_engine.status(), "families": family_engine._rows()})
 
 
-@mcp.custom_route("/api/family/rebuild", methods=["POST"])
+@mcp.custom_route("/api/family/rebuild", methods=["POST", "GET"])
 async def family_rebuild_api(request):
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
+    if request.method == "GET":
+        return JSONResponse(family_engine.rebuild_job_status())
     try:
         body = await request.json()
     except Exception:
@@ -1214,7 +1216,7 @@ async def family_rebuild_api(request):
     dry_run = bool(body.get("dry_run", True))
     async def _meta_loader():
         return await bucket_mgr.list_all(include_archive=False)
-    result = await family_engine.rebuild(dry_run=dry_run, bucket_meta_loader=_meta_loader, threshold=body.get("threshold"))
+    result = await family_engine.rebuild_job_start(dry_run, body.get("threshold"), _meta_loader)
     return JSONResponse(result)
 
 

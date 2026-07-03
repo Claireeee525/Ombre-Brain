@@ -13,7 +13,13 @@ import json
 import uuid
 import sqlite3
 import logging
+import asyncio
 import datetime
+
+try:
+    import numpy as _np
+except Exception:  # pragma: no cover
+    _np = None
 
 logger = logging.getLogger("ombre.family")
 
@@ -235,6 +241,81 @@ def families_for(bucket_ids):
     return out
 
 
+def _cluster_all(vectors, order):
+    """全量贪心聚族（numpy 加速版；无 numpy 时退回纯 Python）。返回家族 dict 列表。"""
+    if _np is None:
+        families = []
+        for bid in order:
+            _assign_to_families(bid, vectors[bid], families)
+        return families
+    ids = [i for i in order if i in vectors]
+    if not ids:
+        return []
+    M = _np.asarray([vectors[i] for i in ids], dtype=_np.float32)
+    row_norms = _np.linalg.norm(M, axis=1)
+    row_norms[row_norms == 0] = 1.0
+    dims = M.shape[1]
+    cap = len(ids)
+    sums = _np.zeros((cap, dims), dtype=_np.float32)
+    norms = _np.zeros(cap, dtype=_np.float32)
+    counts = _np.zeros(cap, dtype=_np.int32)
+    members = []
+    n_fam = 0
+    for row_idx, bid in enumerate(ids):
+        v = M[row_idx]
+        if n_fam:
+            centroids = sums[:n_fam] / counts[:n_fam, None]
+            sims = (centroids @ v) / (norms[:n_fam] * row_norms[row_idx] + 1e-9)
+            best = int(sims.argmax())
+            if sims[best] >= THRESHOLD:
+                sums[best] += v
+                counts[best] += 1
+                centroids_best = sums[best] / counts[best]
+                norms[best] = _np.linalg.norm(centroids_best)
+                members[best].append(bid)
+                continue
+        sums[n_fam] = v
+        counts[n_fam] = 1
+        norms[n_fam] = row_norms[row_idx]
+        members.append([bid])
+        n_fam += 1
+    families = []
+    for i in range(n_fam):
+        centroid = (sums[i] / counts[i]).astype(float).tolist()
+        families.append({
+            "id": uuid.uuid4().hex[:10], "name": None, "summary": None,
+            "member_ids": members[i], "centroid": centroid,
+            "member_count": int(counts[i]), "dirty": False,
+        })
+    return families
+
+
+# --- 后台重聚任务：接口立即返回，结果轮询取，绝不堵死事件循环 ---
+_job = {"running": False, "startedAt": None, "dryRun": None, "result": None, "error": None}
+
+
+def rebuild_job_status():
+    return {k: v for k, v in _job.items()}
+
+
+async def rebuild_job_start(dry_run, threshold, bucket_meta_loader):
+    if _job["running"]:
+        return {"ok": False, "note": "已有一个重聚任务在跑，用 GET 轮询结果。"}
+    _job.update({"running": True, "startedAt": _now(), "dryRun": dry_run, "result": None, "error": None})
+
+    async def _run():
+        try:
+            _job["result"] = await rebuild(dry_run=dry_run, bucket_meta_loader=bucket_meta_loader, threshold=threshold)
+        except Exception as e:
+            logger.warning(f"Rebuild job failed: {e}")
+            _job["error"] = str(e)
+        finally:
+            _job["running"] = False
+
+    asyncio.get_running_loop().create_task(_run())
+    return {"ok": True, "started": True, "dryRun": dry_run, "note": "已开始后台重聚，用 GET /api/family/rebuild 取结果。"}
+
+
 async def rebuild(dry_run=True, bucket_meta_loader=None, threshold=None):
     """全量重聚：读全部向量，按创建时间顺序增量聚族。dry_run 只出预览。threshold 可临时覆盖。"""
     global THRESHOLD
@@ -250,9 +331,7 @@ async def rebuild(dry_run=True, bucket_meta_loader=None, threshold=None):
         created = {m["id"]: m["metadata"].get("created", "") for m in metas}
         names = {m["id"]: m["metadata"].get("name", m["id"]) for m in metas}
         order.sort(key=lambda i: created.get(i, ""))
-    families = []
-    for bid in order:
-        _assign_to_families(bid, vectors[bid], families)
+    families = await asyncio.to_thread(_cluster_all, vectors, order)
     families.sort(key=lambda f: -f["member_count"])
     preview = [{
         "size": f["member_count"],
