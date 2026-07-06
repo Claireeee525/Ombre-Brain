@@ -151,6 +151,25 @@ def record_night(dream, morning_draft, diary_id=None, now=None):
     write_nudge_state(ns)
 
 
+def weekly_due(now=None):
+    """周日晚 21 点后、勿扰前，且本周还没发过「本周我们」。"""
+    if not NUDGE_ENABLED:
+        return False
+    now = now or now_local()
+    if now.weekday() != 6 or now.hour < 21 or now.hour >= QUIET_START_HOUR:
+        return False
+    ns = read_nudge_state()
+    week = now.strftime("%G-W%V")
+    return (ns.get("weekly") or {}).get("week") != week
+
+
+def record_weekly(bucket_id=None, now=None):
+    now = now or now_local()
+    ns = read_nudge_state()
+    ns["weekly"] = {"week": now.strftime("%G-W%V"), "sentAt": now.isoformat(), "bucketId": bucket_id}
+    write_nudge_state(ns)
+
+
 def tick(now=None):
     """一次心跳判定。返回 None 或 {"kind", "title", "body"}（由调用方负责真正发送与落盘确认）。"""
     if not NUDGE_ENABLED:
@@ -240,5 +259,10 @@ def status():
             "lastDoneAt": night.get("doneAt"),
             "draftReadyFor": night.get("forDate") if night.get("morningDraft") else None,
             "diaryId": night.get("diaryId"),
+        },
+        "weekly": {
+            "at": "周日 21:00 后",
+            "lastWeek": (ns.get("weekly") or {}).get("week"),
+            "lastSentAt": (ns.get("weekly") or {}).get("sentAt"),
         },
     }
