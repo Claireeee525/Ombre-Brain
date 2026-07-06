@@ -2241,6 +2241,15 @@ if __name__ == "__main__":
                             await _fire_webhook("kelo_nudge", {"kind": hit["kind"]}, title=hit["title"], body_text=hit["body"])
                             nudge_engine.mark_sent(hit["kind"])
                             logger.info(f"Nudge sent ({hit['kind']}): {hit['body'][:48]}")
+                            # 让他自己记得这次主动：写进身体事件流，官端下次 somatic_read 就知道
+                            try:
+                                st = somatic_state.apply_event(
+                                    somatic_state.read_state(),
+                                    {"type": "self_nudge", "label": f"你主动给Claire发了消息：{hit['body'][:60]}"},
+                                )
+                                somatic_state.write_state(st)
+                            except Exception as se:
+                                logger.warning(f"Nudge self-memory failed: {se}")
                 except Exception as e:
                     logger.warning(f"Nudge loop error: {e}")
                 await asyncio.sleep(60)
