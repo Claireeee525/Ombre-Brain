@@ -1201,7 +1201,11 @@ async def families_api(request):
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
-    return JSONResponse({"status": family_engine.status(), "families": family_engine._rows()})
+    # 去掉 centroid 向量（几百个家族 × 上千维会撑爆响应），按成员数降序
+    rows = family_engine._rows()
+    slim = [{k: v for k, v in f.items() if k != "centroid"} for f in rows]
+    slim.sort(key=lambda f: f["member_count"], reverse=True)
+    return JSONResponse({"status": family_engine.status(), "families": slim})
 
 
 @mcp.custom_route("/api/family/rebuild", methods=["POST", "GET"])

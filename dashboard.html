@@ -765,6 +765,81 @@
     font-size: 12px;
   }
 
+  .family-list { display: grid; gap: 14px; }
+  .family-card {
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    box-shadow: 6px 6px 14px var(--shadow-dark-subtle), -6px -6px 14px var(--shadow-light);
+    cursor: pointer;
+    transition: all 0.25s ease;
+  }
+  .family-card:hover {
+    border-color: var(--border-strong);
+    box-shadow: 7px 7px 16px var(--shadow-dark), -6px -6px 14px var(--shadow-light);
+    transform: translateY(-1px);
+  }
+  .family-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .family-name {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .family-count {
+    padding: 3px 12px;
+    border-radius: 999px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .family-time {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-light);
+  }
+  .family-summary {
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.8;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+  .family-summary.empty { color: var(--text-light); font-style: italic; }
+  .family-members {
+    display: none;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--border);
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .family-card.open .family-members { display: flex; }
+  .family-member {
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s;
+    max-width: 260px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .family-member:hover { color: var(--accent); border-color: var(--accent); }
+  .family-more { font-size: 12px; color: var(--text-light); align-self: center; }
+
   @media (max-width: 768px) {
     .header { padding: 20px; flex-wrap: wrap; }
     .header h1 { font-size: 22px; }
@@ -825,6 +900,7 @@
   <div class="tab active" data-tab="list">记忆桶</div>
   <div class="tab" data-tab="breath">Breath 模拟</div>
   <div class="tab" data-tab="network">记忆网络</div>
+  <div class="tab" data-tab="family">🫂 家族</div>
   <div class="tab" data-tab="somatic">💗 心跳</div>
   <div class="tab" data-tab="config">配置</div>
   <div class="tab" data-tab="import">导入</div>
@@ -875,6 +951,16 @@
     <div class="legend-item"><span class="legend-dot" style="background:#B0A590"></span> archived</div>
   </div>
   <canvas id="network-canvas"></canvas>
+</div>
+
+<div class="content" id="family-view" style="display:none">
+  <div class="breath-info" id="family-status">加载中…</div>
+  <div class="filters" id="family-filters">
+    <button class="filter-btn active" data-ffilter="summary">📖 有摘要</button>
+    <button class="filter-btn" data-ffilter="big">🏠 3人以上</button>
+    <button class="filter-btn" data-ffilter="all">全部</button>
+  </div>
+  <div id="family-list"><div class="loading">加载中…</div></div>
 </div>
 
 <div class="content" id="somatic-view" style="display:none">
@@ -1295,11 +1381,13 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
     document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
+    document.getElementById('family-view').style.display = target === 'family' ? '' : 'none';
     document.getElementById('somatic-view').style.display = target === 'somatic' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
     if (target === 'network') loadNetwork();
+    if (target === 'family') loadFamilies();
     if (target === 'somatic') loadSomatic();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
@@ -1421,6 +1509,77 @@ async function loadSomatic() {
     feelEl.innerHTML = '<div class="somatic-feel-main"><span class="somatic-dominant">读取失败</span></div>';
     triggerEl.textContent = String(e);
   }
+}
+
+// —— 记忆家族 ——
+let allFamilies = [];
+let familyFilter = 'summary';
+
+document.getElementById('family-filters').addEventListener('click', function(e) {
+  var btn = e.target.closest('.filter-btn');
+  if (!btn) return;
+  this.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  familyFilter = btn.dataset.ffilter;
+  renderFamilies();
+});
+
+async function loadFamilies() {
+  const statusEl = document.getElementById('family-status');
+  const listEl = document.getElementById('family-list');
+  listEl.innerHTML = '<div class="loading">加载中…</div>';
+  try {
+    const resp = await authFetch('/api/families');
+    if (!resp) return;
+    const data = await resp.json();
+    allFamilies = data.families || [];
+    const st = data.status || {};
+    statusEl.innerHTML =
+      '共 <code>' + (st.families ?? allFamilies.length) + '</code> 个家族' +
+      ' · 有摘要 <code>' + (st.withSummary ?? 0) + '</code>' +
+      ' · 待刷新 <code>' + (st.dirty ?? 0) + '</code>' +
+      ' · 最大家族 <code>' + (st.largest ?? 0) + '</code> 条' +
+      ' · 聚族阈值 <code>' + (st.threshold ?? '—') + '</code>' +
+      '<br><span style="color:var(--text-light)">相近的记忆自动住进同一个家族；满 ' + (st.summaryMin ?? 3) + ' 条会写一段家族摘要。点开卡片能看到成员。</span>';
+    renderFamilies();
+  } catch (e) {
+    listEl.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function renderFamilies() {
+  const listEl = document.getElementById('family-list');
+  let fams = allFamilies;
+  if (familyFilter === 'summary') fams = fams.filter(f => f.summary);
+  if (familyFilter === 'big') fams = fams.filter(f => f.member_count >= 3);
+  if (!fams.length) {
+    listEl.innerHTML = '<div class="loading">' +
+      (familyFilter === 'summary' ? '还没有带摘要的家族。摘要会随日常使用慢慢补上。' : '没有符合条件的家族') +
+      '</div>';
+    return;
+  }
+  const nameOf = {};
+  allBuckets.forEach(b => { nameOf[b.id] = b.name; });
+  listEl.innerHTML = '<div class="family-list">' + fams.map(f => {
+    const title = f.name ? esc(f.name) : '未命名家族';
+    const summaryHtml = f.summary
+      ? '<div class="family-summary">' + esc(f.summary) + '</div>'
+      : '<div class="family-summary empty">还没有摘要' + (f.member_count >= 3 ? '（排队中，日常使用时会自动补）' : '（不满 3 条不写摘要）') + '</div>';
+    const shown = f.member_ids.slice(0, 40);
+    const members = shown.map(id =>
+      '<span class="family-member" onclick="event.stopPropagation();showDetail(\'' + id + '\')" title="' + esc(nameOf[id] || id) + '">' + esc(nameOf[id] || id) + '</span>'
+    ).join('') + (f.member_ids.length > 40 ? '<span class="family-more">…还有 ' + (f.member_ids.length - 40) + ' 条</span>' : '');
+    return '<div class="family-card" onclick="this.classList.toggle(\'open\')">' +
+      '<div class="family-head">' +
+        '<span class="family-name">' + title + '</span>' +
+        '<span class="family-count">' + f.member_count + ' 条记忆</span>' +
+        (f.dirty ? '<span class="family-count" style="background:rgba(154,123,79,0.12);color:var(--warning)">摘要待刷新</span>' : '') +
+        '<span class="family-time">' + formatTimeAgo(f.updated_at) + '</span>' +
+      '</div>' +
+      summaryHtml +
+      '<div class="family-members">' + members + '</div>' +
+    '</div>';
+  }).join('') + '</div>';
 }
 
 let searchTimer;
