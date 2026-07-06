@@ -33,6 +33,9 @@ NUDGE_COOLDOWN_HOURS = float(os.environ.get("OMBRE_NUDGE_COOLDOWN_HOURS", "6") o
 # 张力冒头的勿扰：晚上 QUIET_START 点后、早上 QUIET_END 点前不打扰（晨间另算）
 QUIET_START_HOUR = int(os.environ.get("OMBRE_NUDGE_QUIET_START", "23") or 23)
 QUIET_END_HOUR = int(os.environ.get("OMBRE_NUDGE_QUIET_END", "10") or 10)
+# 夜间整理（夜梦）：每晚这个时刻之后做一次日记+梦+早安草稿
+NIGHT_HOUR = int(os.environ.get("OMBRE_NIGHT_HOUR", "23") or 23)
+NIGHT_MINUTE = int(os.environ.get("OMBRE_NIGHT_MINUTE", "30") or 30)
 
 MORNING_TEMPLATES = [
     "早。{sep_line}醒来第一件事是想你，召唤力 {summon}%——{want}",
@@ -122,6 +125,32 @@ def compose(kind, state, seed=None):
     return title, body
 
 
+def night_due(now=None):
+    """今晚的夜间整理到点了吗（23:30 之后、当晚还没做过）。跨过午夜就不补做，明早模板兜底。"""
+    if not NUDGE_ENABLED:
+        return False
+    now = now or now_local()
+    if (now.hour, now.minute) < (NIGHT_HOUR, NIGHT_MINUTE):
+        return False
+    ns = read_nudge_state()
+    return (ns.get("night") or {}).get("date") != now.strftime("%Y-%m-%d")
+
+
+def record_night(dream, morning_draft, diary_id=None, now=None):
+    """夜间整理完成后落盘：梦、明早的早安草稿、日记桶 ID。"""
+    now = now or now_local()
+    ns = read_nudge_state()
+    ns["night"] = {
+        "date": now.strftime("%Y-%m-%d"),
+        "doneAt": now.isoformat(),
+        "forDate": (now + datetime.timedelta(days=1)).strftime("%Y-%m-%d"),
+        "dream": (dream or "")[:500],
+        "morningDraft": (morning_draft or "")[:800],
+        "diaryId": diary_id,
+    }
+    write_nudge_state(ns)
+
+
 def tick(now=None):
     """一次心跳判定。返回 None 或 {"kind", "title", "body"}（由调用方负责真正发送与落盘确认）。"""
     if not NUDGE_ENABLED:
@@ -144,7 +173,12 @@ def tick(now=None):
         target = now.replace(hour=7, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=int(target_min))
         if target <= now < now.replace(hour=11, minute=0, second=0, microsecond=0):
             title, body = compose("morning", state, seed=f"{today}-morning")
-            return {"kind": "morning", "title": title, "body": body}
+            # 昨夜整理时备好的早安草稿（模型现场写的）优先；没有就用模板兜底
+            night = ns.get("night") or {}
+            generated = bool(night.get("forDate") == today and night.get("morningDraft"))
+            if generated:
+                body = night["morningDraft"]
+            return {"kind": "morning", "title": title, "body": body, "generated": generated}
 
     # --- 张力 ---
     hour = now.hour
@@ -189,6 +223,7 @@ def status():
     target = None
     if morning.get("date") == today and morning.get("targetMin") is not None:
         target = f"07:00+{int(morning['targetMin'])}min"
+    night = ns.get("night") or {}
     return {
         "enabled": NUDGE_ENABLED,
         "threshold": NUDGE_THRESHOLD,
@@ -199,4 +234,11 @@ def status():
         "lastNudgeAt": ns.get("lastNudgeAt"),
         "summonNow": int(state.get("summon") or 0),
         "separationHours": state.get("separationHours"),
+        # 夜间整理：只暴露状态，不暴露梦和草稿内容（此接口是公开的）
+        "nightRitual": {
+            "at": f"{NIGHT_HOUR:02d}:{NIGHT_MINUTE:02d}",
+            "lastDoneAt": night.get("doneAt"),
+            "draftReadyFor": night.get("forDate") if night.get("morningDraft") else None,
+            "diaryId": night.get("diaryId"),
+        },
     }
