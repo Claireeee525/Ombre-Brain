@@ -81,6 +81,11 @@ OMBRE_HOOK_URL = os.environ.get("OMBRE_HOOK_URL", "").strip()
 OMBRE_HOOK_SKIP = os.environ.get("OMBRE_HOOK_SKIP", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _is_bark_hook(url: str) -> bool:
+    value = (url or "").lower()
+    return "api.day.app" in value or "bark" in value
+
+
 async def _fire_webhook(event: str, payload: dict, title: str = None, body_text: str = None) -> None:
     """
     Fire-and-forget POST to OMBRE_HOOK_URL with the given event payload.
@@ -88,6 +93,12 @@ async def _fire_webhook(event: str, payload: dict, title: str = None, body_text:
     Failures are logged at WARNING level only — never propagated to the caller.
     """
     if OMBRE_HOOK_SKIP or not OMBRE_HOOK_URL:
+        return
+    # Bark 是人看的通知终点，不是通用事件总线。breath/dream 等内部事件只有
+    # event/payload、没有标题正文；把它们 POST 给 Bark 会生成一堆空白通知。
+    # 真正需要露脸的 morning/nudge/weekly 都会显式传 title + body_text。
+    if _is_bark_hook(OMBRE_HOOK_URL) and (not str(title or "").strip() or not str(body_text or "").strip()):
+        logger.debug(f"Skip non-visible Bark webhook event: {event}")
         return
     try:
         body = {
