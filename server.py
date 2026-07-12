@@ -79,11 +79,29 @@ except ValueError:
 # 详见 ENV_VARS.md。
 OMBRE_HOOK_URL = os.environ.get("OMBRE_HOOK_URL", "").strip()
 OMBRE_HOOK_SKIP = os.environ.get("OMBRE_HOOK_SKIP", "").strip().lower() in ("1", "true", "yes", "on")
+OMBRE_HOME_SYNC_URL = os.environ.get(
+    "OMBRE_HOME_SYNC_URL",
+    "https://kelo-claire.zeabur.app/api/chat/proactive/import",
+).strip()
 
 
 def _is_bark_hook(url: str) -> bool:
     value = (url or "").lower()
     return "api.day.app" in value or "bark" in value
+
+
+def _hook_sync_secret(url: str) -> str:
+    raw = (url or "").strip()
+    if _is_bark_hook(raw):
+        try:
+            from urllib.parse import urlsplit
+            parsed = urlsplit(raw)
+            device_key = next((part for part in parsed.path.split("/") if part), "")
+            if parsed.scheme and parsed.netloc and device_key:
+                return f"{parsed.scheme}://{parsed.netloc}/{device_key}"
+        except Exception:
+            pass
+    return raw
 
 
 async def _fire_webhook(event: str, payload: dict, title: str = None, body_text: str = None) -> None:
@@ -101,9 +119,10 @@ async def _fire_webhook(event: str, payload: dict, title: str = None, body_text:
         logger.debug(f"Skip non-visible Bark webhook event: {event}")
         return
     try:
+        timestamp = time.time()
         body = {
             "event": event,
-            "timestamp": time.time(),
+            "timestamp": timestamp,
             "payload": payload,
         }
         if title:
@@ -112,6 +131,32 @@ async def _fire_webhook(event: str, payload: dict, title: str = None, body_text:
             body["body"] = body_text
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(OMBRE_HOOK_URL, json=body)
+            syncable = (
+                bool(OMBRE_HOME_SYNC_URL and title and body_text)
+                and (event == "kelo_weekly" or (event == "kelo_nudge" and (payload or {}).get("kind") != "test"))
+            )
+            if syncable:
+                created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+                external_id = hashlib.sha256(
+                    f"{event}\n{(payload or {}).get('kind') or ''}\n{created_at[:10]}\n{title}\n{body_text}".encode("utf-8")
+                ).hexdigest()
+                sync_body = {
+                    "id": external_id,
+                    "event": event,
+                    "kind": str((payload or {}).get("kind") or ""),
+                    "title": str(title),
+                    "body": str(body_text),
+                    "createdAt": created_at,
+                }
+                raw = _json_lib.dumps(sync_body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                signature = hmac.new(_hook_sync_secret(OMBRE_HOOK_URL).encode("utf-8"), raw, hashlib.sha256).hexdigest()
+                sync_resp = await client.post(
+                    OMBRE_HOME_SYNC_URL,
+                    content=raw,
+                    headers={"content-type": "application/json", "x-kelo-signature": f"sha256={signature}"},
+                )
+                if sync_resp.status_code >= 300:
+                    logger.warning(f"Home proactive sync failed ({event}): HTTP {sync_resp.status_code}")
     except Exception as e:
         logger.warning(f"Webhook push failed ({event} → {OMBRE_HOOK_URL}): {e}")
 
