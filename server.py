@@ -1236,6 +1236,7 @@ async def nudge_status_api(request):
     from starlette.responses import JSONResponse
     s = nudge_engine.status()
     s["hookConfigured"] = bool(OMBRE_HOOK_URL)
+    s["homeSyncConfigured"] = bool(OMBRE_HOME_SYNC_URL)
     return JSONResponse(s)
 
 
