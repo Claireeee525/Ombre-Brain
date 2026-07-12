@@ -1560,8 +1560,111 @@ async def family_backfill_api(request):
 
 
 # =============================================================
-# Tool 5: pulse — Heartbeat, system status + memory listing
-# 工具 5：pulse — 脉搏，系统状态 + 记忆列表
+# Tool 5: constellation — read-only living graph for the little home
+# 工具 5：constellation —— 给小家读取真实的记忆星图（只读）
+# =============================================================
+@mcp.tool()
+async def constellation(limit: int = 220, include_archive: bool = False) -> str:
+    """【小家记忆星图专用，只读】返回 Ombre 的真实记忆节点、记忆家族和家族关系。不会触发 recall 计数、不会写入或修改任何记忆。limit 默认 220，范围 40~400。"""
+    import datetime as _dt
+    try:
+        limit = max(40, min(int(limit or 220), 400))
+        all_buckets = await bucket_mgr.list_all(include_archive=include_archive)
+        families = family_engine._rows()
+        family_by_member = {}
+        for fam in families:
+            for member_id in fam.get("member_ids", []):
+                family_by_member[member_id] = fam
+
+        def bucket_rank(bucket):
+            meta = bucket.get("metadata", {})
+            score = decay_engine.calculate_score(meta)
+            return (
+                1 if meta.get("pinned") or meta.get("protected") else 0,
+                int(meta.get("importance", 5) or 5),
+                float(score or 0),
+                str(meta.get("last_active") or meta.get("created") or ""),
+            )
+
+        selected = sorted(all_buckets, key=bucket_rank, reverse=True)[:limit]
+        selected_ids = {bucket["id"] for bucket in selected}
+        nodes = []
+        node_rank = {}
+        for bucket in selected:
+            meta = bucket.get("metadata", {})
+            bucket_id = bucket["id"]
+            fam = family_by_member.get(bucket_id)
+            score = decay_engine.calculate_score(meta)
+            node_rank[bucket_id] = bucket_rank(bucket)
+            nodes.append({
+                "id": bucket_id,
+                "name": meta.get("name", bucket_id),
+                "type": meta.get("type", "dynamic"),
+                "domain": meta.get("domain", []),
+                "tags": meta.get("tags", []),
+                "valence": meta.get("valence", 0.5),
+                "arousal": meta.get("arousal", 0.3),
+                "importance": meta.get("importance", 5),
+                "score": round(float(score or 0), 4),
+                "resolved": bool(meta.get("resolved", False)),
+                "pinned": bool(meta.get("pinned") or meta.get("protected")),
+                "digested": bool(meta.get("digested", False)),
+                "created": meta.get("created", ""),
+                "last_active": meta.get("last_active", ""),
+                "activation_count": meta.get("activation_count", 1),
+                "family_id": fam.get("id") if fam else None,
+                "content_preview": strip_wikilinks(bucket.get("content", ""))[:360],
+            })
+
+        graph_families = []
+        edges = []
+        for fam in families:
+            members = [member_id for member_id in fam.get("member_ids", []) if member_id in selected_ids]
+            if not members:
+                continue
+            members.sort(key=lambda member_id: node_rank.get(member_id, (0, 0, 0, "")), reverse=True)
+            graph_families.append({
+                "id": fam.get("id"),
+                "name": fam.get("name") or "未命名星座",
+                "summary": fam.get("summary") or "",
+                "member_ids": members,
+                "member_count": fam.get("member_count", len(members)),
+                "updated_at": fam.get("updated_at", ""),
+            })
+            if len(members) >= 2:
+                anchor = members[0]
+                for member_id in members[1:]:
+                    edges.append({"source": anchor, "target": member_id, "kind": "family", "family_id": fam.get("id")})
+
+        for bucket in selected:
+            meta = bucket.get("metadata", {})
+            source_bucket = str(meta.get("source_bucket") or "").strip()
+            if source_bucket and source_bucket in selected_ids:
+                edges.append({"source": source_bucket, "target": bucket["id"], "kind": "reflection"})
+
+        payload = {
+            "source": "ombre_brain",
+            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+            "stats": {
+                "total": len(all_buckets),
+                "visible": len(nodes),
+                "families": len(graph_families),
+                "pinned": sum(1 for node in nodes if node["pinned"]),
+                "archived_included": bool(include_archive),
+            },
+            "nodes": nodes,
+            "edges": edges,
+            "families": graph_families,
+        }
+        return _json_lib.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        logger.exception("Constellation export failed")
+        return _json_lib.dumps({"source": "ombre_brain", "error": str(exc), "nodes": [], "edges": [], "families": []}, ensure_ascii=False)
+
+
+# =============================================================
+# Tool 6: pulse — Heartbeat, system status + memory listing
+# 工具 6：pulse — 脉搏，系统状态 + 记忆列表
 # =============================================================
 @mcp.tool()
 async def pulse(include_archive: bool = False) -> str:
