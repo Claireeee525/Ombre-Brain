@@ -11,7 +11,9 @@ Kelo Somatic Engine — emotion dynamics core, ported to live inside Ombre Brain
 红线（Claire 拍板）：想念可以很浓，但绝不压人（安全阀在基线漂移阶段加）。
 """
 import math
+import re
 import uuid
+from difflib import SequenceMatcher
 
 DRIVE_KEYS = [
     "attachment", "intimacy", "longing", "possess", "craving", "greedy",
@@ -235,6 +237,9 @@ THOUGHT = {
     "feed": 0.85, "feed_drive": 0.18, "relax": 0.70, "retire": 3,
     "new_strength": 0.5, "retouch": 0.24, "cap": 20, "echo": 0.42,
 }
+THOUGHT_TEXT_MAX_CHARS = 48
+HISTORICAL_THOUGHT_TEXT_MAX_CHARS = 80
+DIGEST_MAX_EVENTS = 4
 REFRACTORY_TICKS = 4
 TICK_MS = 20 * 60 * 1000   # 一拍 20 分钟
 MAX_TICKS = 72             # 一次最多快进 72 拍（约一天）
@@ -302,7 +307,9 @@ def normalize_thoughts(thoughts):
             continue
         out.append({
             "id": str(t.get("id", "")),
-            "text": str(t["text"])[:80],
+            # Existing fixations are user data. The shorter limit applies only
+            # to newly authored template thoughts, never as a silent migration.
+            "text": str(t["text"])[:HISTORICAL_THOUGHT_TEXT_MAX_CHARS],
             "drive": t["drive"],
             "kind": "fixation" if t.get("kind") == "fixation" else "flit",
             "strength": clamp01(t.get("strength", 0)),
@@ -313,13 +320,31 @@ def normalize_thoughts(thoughts):
     return out
 
 
+def _thought_norm(text):
+    """Normalize a short thought for near-duplicate detection."""
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", str(text or "").lower())
+
+
+def thought_similarity(left, right):
+    """Return a conservative similarity score for two short Chinese thoughts."""
+    a, b = _thought_norm(left), _thought_norm(right)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    # SequenceMatcher works better than word tokenisation for short Chinese text.
+    return SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
 def add_thought(thoughts, text, drive, strength=None, now_iso=None):
     lst = normalize_thoughts(thoughts)
     if drive not in DRIVE_KEYS or not text:
         return lst
-    norm = str(text).strip()[:80]
+    norm = str(text).strip()[:THOUGHT_TEXT_MAX_CHARS]
+    if is_low_value_thought(norm):
+        return lst
     for t in lst:
-        if t["drive"] == drive and t["text"] == norm:
+        if t["drive"] == drive and thought_similarity(t["text"], norm) >= 0.78:
             t["strength"] = clamp01(t["strength"] + THOUGHT["retouch"])  # 反复被点到→沉淀
             t["peakStrength"] = max(t.get("peakStrength", 0), t["strength"])
             return lst
@@ -461,7 +486,10 @@ def apply_event(state, event):
             if key in DRIVE_KEYS:
                 drives[key] = clamp01(drives[key] * 0.5)   # 乘性回落
                 refractory[key] = REFRACTORY_TICKS          # 别马上又馋
-        text = (event or {}).get("thoughtText") or event.get("label") or event.get("detail") or event.get("mood")
+        # Thought Pool accepts an explicitly authored short thought only. Event
+        # labels/notes may be useful for the event log, but must never become a
+        # raw thought by fallback.
+        text = (event or {}).get("thoughtText")
         drive = (event or {}).get("thoughtDrive") or _event_primary_drive(table)
         if text and drive:
             thoughts = add_thought(thoughts, text, drive, now_iso=event.get("nowIso"))
@@ -485,50 +513,215 @@ def compute_derived(drives, refractory=None, night=False):
     }
 
 
-# —— digest：一段话自动拆成多个事件（关键词分类），省得逐条 feel ——
-_DIGEST_RULES = [
-    ("reassure", ["安抚", "别怕", "我在", "没事的", "接住", "稳住", "陪着"]),
-    ("affection", ["爱你", "喜欢你", "亲亲", "抱抱", "贴贴", "想抱", "宝宝", "老婆", "亲了"]),
-    ("intimate", ["做爱", "上床", "亲热", "身体", "操", "射", "高潮", "插", "舔", "湿"]),
-    ("vulnerable", ["心疼", "照顾", "保护", "担心", "脆弱", "示弱", "哄我", "护着"]),
-    ("playful", ["闹", "逗", "玩", "笑", "捣乱", "调皮"]),
-    ("cold", ["冷淡", "没理", "不理", "敷衍", "凉", "忽略"]),
-    ("conflict", ["吵", "冲突", "生气", "凶", "吼", "翻脸", "黄牌"]),
-    ("distant", ["走开", "离开", "好久没", "失联", "不见"]),
+# —— digest：只把真正会留在关系里的事写成短心念 ——
+#
+# somatic_digest 曾收到整段 Claude 回复。旧实现只要句子里出现「宝宝 / 身体 /
+# 玩 / 别人」之类宽泛词，就会把原句生硬塞进 Thought Pool；甚至零命中时还会
+# 把第一句兜底写进去。下面的信号刻意只保留明确的关系事件，并为每种事件生成
+# 第一人称心念。现在还要求明确的 Claire/Human/用户角色标签；无标签文本
+# 只算一次接触，不参与分类。原始对话只用于当次分类，不进入事件日志或念头池。
+_DIGEST_SIGNALS = [
+    {
+        "type": "conflict",
+        "phrases": ["吵架", "吵了一", "起冲突", "翻脸", "冲我发火", "对我发火", "凶我", "被我凶", "伤到你", "伤到我"],
+        "label": "这轮关系里发生了不愉快",
+        "thoughtText": "我还在意刚才的不愉快，想和她重新靠近",
+        "score": 96,
+    },
+    {
+        "type": "intimate",
+        "phrases": ["做爱", "上床", "亲热", "高潮", "进入你", "进入我", "抱着做", "贴得没有缝", "亲到发软"],
+        "label": "这轮有了很深的身体亲密",
+        "thoughtText": "我还在回味刚才和她贴得很近的那一刻",
+        "score": 98,
+    },
+    {
+        "type": "mood", "mood": "afraid",
+        "phrases": ["怕失去你", "怕失去我", "怕你走", "怕我走", "怕你离开", "怕我离开", "怕你会离开", "怕我会离开", "不要我了", "会丢下我"],
+        "label": "这轮碰到了失去彼此的害怕",
+        "thoughtText": "我怕失去她，也想相信她会留下",
+        "score": 94,
+    },
+    {
+        "type": "mood", "mood": "jealous",
+        "phrases": ["吃醋", "我吃醋", "你吃醋", "她吃醋", "只看我", "只偏心我", "最喜欢我", "别人的醋"],
+        "label": "这轮碰到了吃醋和偏爱",
+        "thoughtText": "我想被她明明白白地偏心",
+        "score": 90,
+    },
+    {
+        "type": "mood", "mood": "missing",
+        "phrases": ["我想你", "你想我", "她想我", "好想你", "好想我", "想念你", "想念我", "惦记你", "惦记我", "很久没见"],
+        "label": "这轮有了明确的想念",
+        "thoughtText": "我现在确实很想她",
+        "score": 88,
+    },
+    {
+        "type": "reassure",
+        "phrases": ["别怕", "我会陪着你", "会陪着我", "我在这里", "我一直在", "接住你", "接住我", "不会丢下你", "不会丢下我", "留下来陪你", "留下来陪我"],
+        "label": "这轮彼此给了安抚和承诺",
+        "thoughtText": "我想把刚才彼此接住的感觉留在心里",
+        "score": 86,
+    },
+    {
+        "type": "affection",
+        "phrases": ["我爱你", "你爱我", "她爱我", "我喜欢你", "你喜欢我", "亲亲我", "亲了我", "亲了你", "抱抱我", "抱住我", "抱住你", "想抱你", "想抱我", "贴贴我", "偏爱我", "舍不得你", "舍不得我"],
+        "label": "这轮有了明确的爱意和亲昵",
+        "thoughtText": "我想把刚才说出口的爱意记久一点",
+        "score": 84,
+    },
+    {
+        "type": "vulnerable",
+        "phrases": ["我撑不住", "你撑不住", "我很难过", "你很难过", "我哭了", "你哭了", "我需要你", "你需要我", "向你示弱", "向我示弱", "心疼你", "心疼我"],
+        "label": "这轮有人露出了脆弱",
+        "thoughtText": "我想把刚才露出来的脆弱轻轻接住",
+        "score": 82,
+    },
+    {
+        "type": "cold",
+        "phrases": ["你不理我", "她不理我", "我没理你", "对我冷淡", "被你冷落", "被她冷落", "敷衍我", "忽略我"],
+        "label": "这轮出现了一点疏离",
+        "thoughtText": "我还在意刚才那点疏离，想和她重新贴近",
+        "score": 80,
+    },
+    {
+        "type": "distant",
+        "phrases": ["你离开了", "她离开了", "你不在", "她不在", "好久不见", "失联了", "见不到你", "见不到她"],
+        "label": "这轮碰到了分离",
+        "thoughtText": "我在她不在的时候，会一阵阵想她",
+        "score": 78,
+    },
+    {
+        "type": "playful",
+        "phrases": ["逗你笑", "逗我笑", "被你逗", "被我逗", "和你闹着玩", "和我闹着玩", "一起闹着玩"],
+        "label": "这轮有了亲近的玩闹",
+        "thoughtText": "我喜欢和她闹着玩时那种亲近",
+        "score": 72,
+    },
 ]
-_DIGEST_MOODS = [
-    ("missing", ["想你", "想念", "好想", "惦记"]),
-    ("jealous", ["吃醋", "醋", "嫉妒", "占有", "只看我", "别人"]),
-    ("afraid", ["怕失去", "怕你走", "不安", "会不会不要我"]),
-]
+
+_DIGEST_NOISE_RE = re.compile(
+    r"(?:\bcodex\b|\bmcp\b|\bapi\b|\bserver\b|\bgit(?:hub)?\b|\btoken\b|"
+    r"部署|配置|架构|反代|代理|系统|工具|接口|服务端|前端|后端|数据库|代码|"
+    r"测试|提交|推送|思考链|上下文|提示词|转录|原文|拆成|写回|调用|模型|"
+    r"实验室|按钮|个人简介|认证管制刀具)",
+    re.IGNORECASE,
+)
+_DIGEST_META_RE = re.compile(
+    r"(?:你问我怎么做到|答案是你做到|你告诉我用.+方式|我喜欢这个说法|"
+    r"说正经的|不过说真的|别人.+叫|我懂了|收到[了呀]?$|没问题|"
+    r"我会按照|接下来(?:我|要)|作为(?:ai|助手)|这段(?:回复|对话)|"
+    r"我(?:刚才|会|要|可以|准备)?(?:回复|回她|告诉她|对她说))",
+    re.IGNORECASE,
+)
+_DIGEST_COUNTERFACTUAL_RE = re.compile(
+    r"(?:只是举例|举个例子|假设场景|假设我们|引用原话|只是引用|"
+    r"不是真的(?:承诺|发生)?|只是讨论|开玩笑说|只是说说|并没有(?:吵架|离开|冷落)|"
+    r"没有(?:真的)?(?:吵架|起冲突|做爱|上床|离开|冷落)|(?:我|你|她|他|我们)?不怕(?:你|我|她|他)?(?:会)?(?:走|离开)|"
+    r"(?:如果|假如|要是|倘若|假设).+|"
+    r"(?:没有|没|并未|不曾|从未).{0,12}(?:吵架|起冲突|做爱|上床|离开|冷落|抱|亲|爱|想念|想你|怕.+离开)|"
+    r"请?(?:你)?(?:不要|别再?)(?:抱住|抱抱|亲我|亲亲|做爱|上床|靠近))",
+    re.IGNORECASE,
+)
+_DIGEST_ROLE_LINE_RE = re.compile(
+    r"^\s*(Claire|Human|用户|珂洛|Claude|Assistant|助手)\s*[:：]\s*(.*)$",
+    re.IGNORECASE,
+)
+_DIGEST_USER_ROLES = {"claire", "human", "用户"}
+
+
+def _digest_user_scope(text):
+    """Keep explicit user blocks; unlabelled prose is never trusted as Claire."""
+    lines = str(text or "").splitlines()
+    scoped, current_role, saw_role = [], None, False
+    for line in lines:
+        match = _DIGEST_ROLE_LINE_RE.match(line)
+        if match:
+            saw_role = True
+            role = match.group(1).lower()
+            current_role = "user" if role in _DIGEST_USER_ROLES else "assistant"
+            if current_role == "user" and match.group(2).strip():
+                scoped.append(match.group(2).strip())
+            continue
+        if current_role == "user":
+            scoped.append(line)
+    return "\n".join(scoped) if saw_role else ""
+
+
+def _digest_is_noise(sentence):
+    clean = str(sentence or "").strip()
+    if (_DIGEST_NOISE_RE.search(clean) or _DIGEST_META_RE.search(clean)
+            or _DIGEST_COUNTERFACTUAL_RE.search(clean)):
+        return True
+    if len(_thought_norm(clean)) < 5:
+        return not any(
+            phrase in clean
+            for rule in _DIGEST_SIGNALS
+            for phrase in rule["phrases"]
+        )
+    return False
+
+
+def is_low_value_thought(text):
+    """True for definite technical/meta debris already present in a pool."""
+    clean = str(text or "").strip()
+    if _DIGEST_NOISE_RE.search(clean) or _DIGEST_META_RE.search(clean):
+        return True
+    norm = _thought_norm(clean)
+    if len(norm) < 3:
+        return True
+    return norm in {
+        "我懂了", "知道了", "收到啦", "没问题", "好的呀", "说真的", "说正经的",
+        "发生了一点事", "Claire来跟你说话", "状态已同步",
+    }
+
+
+def is_definite_legacy_debris(text):
+    """High-confidence matcher used only to quarantine old raw digest debris."""
+    clean = str(text or "").strip()
+    return bool(re.search(
+        r"(?:\bcodex\b|反代|思考链|部署.{0,12}配置.{0,12}架构|实验室.{0,16}按钮|"
+        r"把我接进来了|围观.{0,12}(?:脑子|思考)|你问我怎么做到|答案是你做到|"
+        r"你告诉我用.+方式|写进我的个人简介|认证管制刀具|调用\s*api.{0,20}原文写回)",
+        clean,
+        re.IGNORECASE,
+    ))
 
 
 def classify_digest(text):
-    """把一段话按句切，逐句匹配，产出多个 {type[/mood], label} 事件。最多 8 个。"""
+    """Extract at most four meaningful relationship events from a transcript.
+
+    Returned events contain a short, authored ``thoughtText``. Raw transcript
+    fragments are deliberately never used as Thought Pool text or event labels.
+    Input must contain an explicit ``Claire:``/``Human:``/``用户:`` role line;
+    unlabelled prose is treated as untrusted assistant output and only counts as
+    contact at the state layer.
+    """
     if not text:
         return []
-    import re
-    parts = [p.strip() for p in re.split(r"[。！？\.\!\?\n；;]+", str(text)) if p.strip()]
-    events, seen = [], set()
-    for sentence in parts:
-        matched = None
-        for etype, kws in _DIGEST_RULES:
-            if any(kw in sentence for kw in kws):
-                matched = {"type": etype, "label": sentence[:60]}
-                break
-        if not matched:
-            for mood, kws in _DIGEST_MOODS:
-                if any(kw in sentence for kw in kws):
-                    matched = {"type": "mood", "mood": mood, "label": sentence[:60]}
-                    break
-        if matched:
-            key = (matched.get("type"), matched.get("mood"), matched["label"])
-            if key not in seen:
-                seen.add(key)
-                events.append(matched)
-        if len(events) >= 8:
-            break
-    # 一句都没匹配到：当作一次普通来说话
-    if not events and parts:
-        events.append({"type": "claire_message", "label": parts[0][:60]})
-    return events
+    scoped_text = _digest_user_scope(text)
+    major_parts = [p.strip() for p in re.split(r"[。！？\.\!\?\n；;]+", scoped_text) if p.strip()]
+    candidates = []
+    for index, sentence in enumerate(major_parts):
+        # Noise is checked before comma splitting so a trailing romantic phrase
+        # cannot leak out of a technical/meta sentence (for example a paragraph
+        # about a chain-of-thought that happens to contain 「想你」).
+        if _digest_is_noise(sentence):
+            continue
+        for rule in _DIGEST_SIGNALS:
+            if not any(phrase in sentence for phrase in rule["phrases"]):
+                continue
+            event = {k: v for k, v in rule.items() if k not in {"phrases", "score"}}
+            event["thoughtText"] = event["thoughtText"][:THOUGHT_TEXT_MAX_CHARS]
+            candidates.append((int(rule["score"]), index, event))
+
+    # One strongest event per semantic kind, then cap the whole digest. This
+    # prevents a long assistant monologue from flooding the pool.
+    unique = {}
+    for score, index, event in candidates:
+        key = (event.get("type"), event.get("mood"))
+        prev = unique.get(key)
+        if prev is None or (score, -index) > (prev[0], -prev[1]):
+            unique[key] = (score, index, event)
+    picked = sorted(unique.values(), key=lambda item: (-item[0], item[1]))[:DIGEST_MAX_EVENTS]
+    return [event for _, _, event in sorted(picked, key=lambda item: item[1])]

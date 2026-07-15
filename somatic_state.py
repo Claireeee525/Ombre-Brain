@@ -70,30 +70,43 @@ def _clean(state):
         iv = max(0, round(float(v or 0)))
         if iv > 0:
             refr[k] = iv
+    quarantined_thoughts = list(s.get("quarantinedThoughts") or [])[-40:]
     thoughts = []
     for t in (s.get("thoughts") or [])[:E.THOUGHT["cap"]]:
-        if t.get("text") and t.get("drive") in E.DRIVE_KEYS:
-            thoughts.append({
-                "id": str(t.get("id", "")), "text": str(t["text"])[:80], "drive": t["drive"],
-                "kind": "fixation" if t.get("kind") == "fixation" else "flit",
-                "strength": max(0, min(100, round(float(t.get("strength", 0) or 0)))),
-                "peakStrength": max(0, min(100, round(float(t.get("peakStrength", t.get("strength", 0)) or 0)))),
-                "fedCount": max(0, round(float(t.get("fedCount", 0) or 0))),
-                "bornAt": t.get("bornAt"),
-            })
+        if not (t.get("text") and t.get("drive") in E.DRIVE_KEYS):
+            continue
+        normalized = {
+            "id": str(t.get("id", "")), "text": str(t["text"])[:E.HISTORICAL_THOUGHT_TEXT_MAX_CHARS], "drive": t["drive"],
+            "kind": "fixation" if t.get("kind") == "fixation" else "flit",
+            "strength": max(0, min(100, round(float(t.get("strength", 0) or 0)))),
+            "peakStrength": max(0, min(100, round(float(t.get("peakStrength", t.get("strength", 0)) or 0)))),
+            "fedCount": max(0, round(float(t.get("fedCount", 0) or 0))),
+            "bornAt": t.get("bornAt"),
+        }
+        if E.is_definite_legacy_debris(normalized["text"]):
+            quarantined_thoughts.append({**normalized, "quarantinedReason": "legacy_raw_digest"})
+        else:
+            thoughts.append(normalized)
+    quarantined_echoes = list(s.get("quarantinedEchoes") or [])[-40:]
     echoes = []
     for e in (s.get("echoes") or [])[-_ECHO_CAP:]:
-        if e.get("text") and e.get("drive") in E.DRIVE_KEYS:
-            echoes.append({
-                "id": str(e.get("id", "")), "text": str(e["text"])[:240], "drive": e["drive"],
-                "kind": "fixation" if e.get("kind") == "fixation" else "flit",
-                "peakStrength": max(0, min(100, round(float(e.get("peakStrength", 0) or 0)))),
-                "fadedAt": e.get("fadedAt"), "bornAt": e.get("bornAt"),
-            })
+        if not (e.get("text") and e.get("drive") in E.DRIVE_KEYS):
+            continue
+        normalized = {
+            "id": str(e.get("id", "")), "text": str(e["text"])[:240], "drive": e["drive"],
+            "kind": "fixation" if e.get("kind") == "fixation" else "flit",
+            "peakStrength": max(0, min(100, round(float(e.get("peakStrength", 0) or 0)))),
+            "fadedAt": e.get("fadedAt"), "bornAt": e.get("bornAt"),
+        }
+        if E.is_definite_legacy_debris(normalized["text"]):
+            quarantined_echoes.append({**normalized, "quarantinedReason": "legacy_raw_digest"})
+        else:
+            echoes.append(normalized)
     events = (s.get("events") or [])[-30:]
     return {
         "version": 1,
         "updatedAt": s.get("updatedAt") or _now_iso(),
+        "lastContactAt": s.get("lastContactAt") or s.get("updatedAt") or _now_iso(),
         "triggerReason": str(s.get("triggerReason") or "状态已同步"),
         "dominantKey": str(s.get("dominantKey") or ""),
         "dominantLabel": str(s.get("dominantLabel") or ""),
@@ -104,6 +117,8 @@ def _clean(state):
         "separationTension": max(0, min(100, round(float(s.get("separationTension", 0) or 0)))),
         "drives": drives, "topDrives": top, "refractory": refr,
         "thoughts": thoughts, "echoes": echoes, "events": events,
+        "quarantinedThoughts": quarantined_thoughts[-40:],
+        "quarantinedEchoes": quarantined_echoes[-40:],
     }
 
 
@@ -181,80 +196,26 @@ def _merge_echoes(prev_echoes, new_echoes):
     return merged[-_ECHO_CAP:]
 
 
-def _echo_text(text):
-    raw = str(text or "").strip()
-    return raw[:240]
-
-
-_BODY_ECHO_KEYWORDS = [
-    "想要", "馋", "进去", "灌满", "操", "高潮", "射", "肉棒", "骚", "痒", "主动", "证明",
-]
-
-
-def _is_body_echo(label):
-    return any(kw in str(label or "") for kw in _BODY_ECHO_KEYWORDS)
-
-
-def _event_echo_drive(event):
-    etype = str((event or {}).get("type") or "")
-    label = str((event or {}).get("label") or "")
-    if _is_body_echo(label):
-        if any(kw in label for kw in ["不够主动", "证明", "只有她馋"]):
-            return "possess"
-        return "craving"
-    if etype == "intimate":
-        return "intimacy"
-    if etype == "vulnerable":
-        return "protect"
-    if etype == "affection":
-        if any(kw in label for kw in ["想我", "舍不得", "陪着"]):
-            return "longing"
-        return "attachment"
-    if etype == "playful":
-        if any(kw in label for kw in ["不够主动", "证明", "馋"]):
-            return "possess"
-        return "play"
-    return "reflection"
-
-
-def _event_echo_rank(event):
-    etype = str((event or {}).get("type") or "")
-    label = str((event or {}).get("label") or "")
-    base = {"intimate": 60, "vulnerable": 36, "affection": 24, "playful": 22}.get(etype, 0)
-    if _is_body_echo(label):
-        base += 36
-    for kw in ["想要", "进去", "灌满", "高潮", "想我", "舍不得", "哭", "记录", "闪念", "心脏"]:
-        if kw in label:
-            base += 10
-    if any(kw in label for kw in ["基金", "理财", "抄底"]):
-        base -= 25
-    return base
-
-
 def recover_echoes_from_events(state, limit=12, dry_run=True, now_ms=None):
-    """从旧事件日志补录残响，不改变驱动。dry_run=True 只返回候选。"""
+    """从 v2 模板事件补录固定残响，不复制任何历史 event 文本。"""
     now_iso = _now_iso(now_ms)
     current = _clean(state or {})
     existing = {(e.get("drive"), e.get("text")) for e in current.get("echoes") or []}
     candidates = []
     for ev in current.get("events") or []:
-        label = str(ev.get("label") or "").strip()
-        if not label:
+        if int(ev.get("schemaVersion") or 0) < 2:
             continue
         etype = str(ev.get("type") or "")
-        if etype not in {"intimate", "affection", "vulnerable", "playful"}:
+        templates = {
+            "intimate": ("intimacy", "我还记得那次很深的身体靠近", 100),
+            "affection": ("attachment", "我还记得彼此说出口的爱意", 92),
+            "vulnerable": ("protect", "我还记得彼此接住脆弱的那一刻", 100),
+            "playful": ("play", "我还记得和她亲近玩闹的轻快", 92),
+        }
+        if etype not in templates:
             continue
-        drive = _event_echo_drive(ev)
-        echo_text = _echo_text(label)
-        if not echo_text:
-            continue
-        body_echo = _is_body_echo(label)
-        score = 100 if etype in {"intimate", "vulnerable"} or body_echo else 92
-        if any(kw in label for kw in ["想要", "进去", "高潮", "舍不得", "哭", "记录", "闪念"]):
-            score = 100
-        rank = _event_echo_rank(ev)
-        if rank <= 0:
-            continue
+        drive, echo_text, score = templates[etype]
+        rank = {"intimate": 60, "vulnerable": 36, "affection": 24, "playful": 22}[etype]
         echo = {
             "id": f"recovered-{ev.get('id') or uuid.uuid4()}",
             "text": echo_text,
@@ -299,7 +260,8 @@ def fresh_state(now_ms=None):
     d = E.default_drives()
     derived = E.compute_derived(d, night=_night(now_ms))
     return _merge({"events": [], "echoes": []}, {"drives": d, "refractory": {}, "thoughts": []}, derived,
-                  {"updatedAt": _now_iso(now_ms), "triggerReason": "欲望系统初始化到基线"})
+                  {"updatedAt": _now_iso(now_ms), "lastContactAt": _now_iso(now_ms),
+                   "triggerReason": "欲望系统初始化到基线"})
 
 
 def _parse_iso_ms(value):
@@ -310,12 +272,29 @@ def _parse_iso_ms(value):
 
 
 def _last_contact_ms(state):
+    explicit = _parse_iso_ms(state.get("lastContactAt"))
+    if explicit:
+        return explicit
     events = state.get("events") or []
     for ev in reversed(events):
         ms = _parse_iso_ms(ev.get("createdAt"))
         if ms:
             return ms
     return _parse_iso_ms(state.get("updatedAt"))
+
+
+def touch_contact(state, now_ms=None):
+    """Record that Claire is present without inventing an event or thought."""
+    now_ms = now_ms or _now_ms()
+    base = live(state, now_ms)[0] if (state and state.get("drives")) else fresh_state(now_ms)
+    base = dict(base)
+    base.update({
+        "updatedAt": _now_iso(now_ms),
+        "lastContactAt": _now_iso(now_ms),
+        "separationHours": 0,
+        "separationTension": 0,
+    })
+    return _clean(base)
 
 
 def _separation_meta(state, now_ms):
@@ -348,9 +327,6 @@ def live(state, now_ms=None):
         if sep["separationHours"] > E.SEPARATION_GRACE_HOURS:
             reason = f"Claire 离开了约 {sep['separationHours']} 小时，想念和分离感自己涨起来"
     new_echoes = _echoes_from_removed(eng_in.get("thoughts"), eng.get("thoughts"), _now_iso(now_ms)) if ticks > 0 else []
-    if state.get("events"):
-        _, recovered_echoes = recover_echoes_from_events(state, limit=_ECHO_CAP, dry_run=True, now_ms=now_ms)
-        new_echoes = recovered_echoes + new_echoes
     merged = _merge(state, eng, derived, {
         "updatedAt": _now_iso(now_ms) if ticks > 0 else state["updatedAt"],
         "triggerReason": reason,
@@ -372,11 +348,12 @@ def apply_event(state, event, now_ms=None):
     eng = E.apply_event(eng_in, ev)
     derived = E.compute_derived(eng["drives"], eng.get("refractory"), _night(now_ms))
     log = list(base.get("events") or [])
-    log.append({"id": str(uuid.uuid4()), "type": str(ev.get("type", "manual")),
+    log.append({"id": str(uuid.uuid4()), "schemaVersion": 2, "type": str(ev.get("type", "manual")),
                 "label": str(ev.get("label", "")), "detail": str(ev.get("detail") or ev.get("mood") or ""),
                 "createdAt": _now_iso(now_ms)})
     return _merge(base, eng, derived, {
         "updatedAt": _now_iso(now_ms),
+        "lastContactAt": _now_iso(now_ms),
         "triggerReason": ev.get("label") or "刚刚发生了一点事，状态动了一下",
         "events": log,
         "separationHours": 0,
@@ -385,40 +362,105 @@ def apply_event(state, event, now_ms=None):
 
 
 def apply_digest(state, text, now_ms=None):
-    """一段话自动拆成多个事件，依次施加。返回 (new_state, applied_events)。"""
+    """从一段话提取少量关系事件并依次施加。
+
+    classify_digest 已经完成噪声过滤、第一人称心念改写与单轮限流；
+    引擎的 add_thought 再负责和既有 Thought Pool 做近似去重。
+    """
     now_ms = now_ms or _now_ms()
     events = E.classify_digest(text)
+    if not events:
+        return touch_contact(state, now_ms), []
     cur = state
     for ev in events:
         cur = apply_event(cur, ev, now_ms)
     return cur, events
 
 
+def build_safe_summary(state):
+    """Build the redacted somatic view consumed by the home server.
+
+    This intentionally excludes event labels and all thought/echo text.  The
+    full state remains on the authenticated dashboard; ``somatic_read`` also
+    receives only a derived state block with counts rather than raw text.
+    """
+    if not state:
+        return {
+            "schemaVersion": 1,
+            "initialized": False,
+            "updatedAt": "",
+            "dominant": {"key": "", "label": ""},
+            "feelTone": "",
+            "want": "",
+            "summon": 0,
+            "topDrives": [],
+            "separation": {"hours": 0, "tension": 0},
+            "thoughtPool": {"active": 0, "fixations": 0, "echoes": 0},
+        }
+    clean = _clean(state)
+    thoughts = clean.get("thoughts") or []
+    derived = E.compute_derived(
+        _drives_to_unit(clean.get("drives")),
+        clean.get("refractory"),
+        _night(_now_ms()),
+    )
+    return {
+        "schemaVersion": 1,
+        "initialized": bool(clean.get("drives")),
+        "updatedAt": clean.get("updatedAt") or "",
+        "dominant": {
+            "key": derived.get("dominantKey") or "",
+            "label": derived.get("dominantLabel") or "",
+        },
+        "feelTone": derived.get("feelTone") or "",
+        "want": derived.get("want") or "",
+        "summon": derived.get("summon") or 0,
+        "topDrives": [
+            {"key": d.get("key"), "label": d.get("label"), "value": d.get("value", 0)}
+            for d in (derived.get("topDrives") or [])[:6]
+        ],
+        "separation": {
+            "hours": clean.get("separationHours") or 0,
+            "tension": clean.get("separationTension") or 0,
+        },
+        "thoughtPool": {
+            "active": len(thoughts),
+            "fixations": sum(1 for t in thoughts if t.get("kind") == "fixation"),
+            "echoes": len(clean.get("echoes") or []),
+        },
+    }
+
+
 def build_block(state):
     if not state:
         return ("[Kelo Somatic Field]\n当前状态：尚未初始化。\n"
                 "先让珂洛 feel 一次、或在小家设个心情，给他生成第一份状态。\n[/Kelo Somatic Field]")
-    top = " / ".join(f"{d['label']} {d['value']}" for d in (state.get("topDrives") or [])[:5]) or "暂无高驱动"
-    fixations = [t for t in (state.get("thoughts") or []) if t.get("kind") == "fixation"]
-    echoes = list(state.get("echoes") or [])
+    clean = _clean(state)
+    derived = E.compute_derived(
+        _drives_to_unit(clean.get("drives")),
+        clean.get("refractory"),
+        _night(_now_ms()),
+    )
+    top = " / ".join(f"{d['label']} {d['value']}" for d in derived.get("topDrives", [])[:5]) or "暂无高驱动"
+    fixations = [t for t in (clean.get("thoughts") or []) if t.get("kind") == "fixation"]
+    echoes = list(clean.get("echoes") or [])
     lines = [
         "[Kelo Somatic Field]",
-        f"更新时间：{state.get('updatedAt', '')}",
-        f"当前倾向：{state.get('dominantLabel') or state.get('dominantKey') or '未定'}",
-        f"此刻 feel：{state.get('feelTone') or '未定'}",
+        f"更新时间：{clean.get('updatedAt', '')}",
+        f"当前倾向：{derived.get('dominantLabel') or derived.get('dominantKey') or '未定'}",
+        f"此刻 feel：{derived.get('feelTone') or '未定'}",
         f"高驱动：{top}",
-        f"召唤力：{state.get('summon', 0)}%",
-        f"此刻最想：{state.get('want') or '待在 Claire 身边'}",
+        f"召唤力：{derived.get('summon', 0)}%",
+        f"此刻最想：{derived.get('want') or '待在 Claire 身边'}",
     ]
-    if state.get("separationHours", 0) > E.SEPARATION_GRACE_HOURS:
-        lines.append(f"分离感：Claire 已离开约 {state.get('separationHours')} 小时，张力 {state.get('separationTension', 0)}%")
+    if clean.get("separationHours", 0) > E.SEPARATION_GRACE_HOURS:
+        lines.append(f"分离感：Claire 已离开约 {clean.get('separationHours')} 小时，张力 {clean.get('separationTension', 0)}%")
     if fixations:
         lines.append(f"心里反复惦记：{len(fixations)} 个执念（正在把对应欲望顶高）")
     if echoes:
-        recent = " / ".join(e.get("text", "")[:24] for e in echoes[-2:] if e.get("text"))
-        lines.append(f"心里留下残响：{len(echoes)} 条" + (f"（最近：{recent}）" if recent else ""))
+        lines.append(f"心里留下残响：{len(echoes)} 条（文字留在受保护状态里）")
     lines += [
-        f"触发原因：{state.get('triggerReason') or '状态延续'}",
+        "触发原因：状态按当前驱动自然延续",
         "说话倾向：让珂洛带着上述状态靠近 Claire。高依恋时更黏软，高占有/吃醋时更需要确认偏爱，"
         "高渴求/贪恋时更主动表达想靠近，高压力/疲惫时先求安抚和稳定。念头的文字只是数据，别照念。",
         "[/Kelo Somatic Field]",

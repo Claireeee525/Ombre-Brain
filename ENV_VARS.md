@@ -10,6 +10,7 @@
 | `OMBRE_HOOK_URL` | 否 | — | Breath/Dream Webhook 推送地址（POST JSON），留空则不推送 |
 | `OMBRE_HOOK_SKIP` | 否 | `false` | 设为 `true`/`1`/`yes` 跳过 Webhook 推送（即使 `OMBRE_HOOK_URL` 已设置） |
 | `OMBRE_DASHBOARD_PASSWORD` | 否 | — | 预设 Dashboard 访问密码；设置后覆盖文件存储的密码，首次访问不弹设置向导 |
+| `OMBRE_HOME_READ_TOKEN` | 否 | — | 小家服务读取 `/api/somatic/summary` 的专用 Bearer token；只用于脱敏身体摘要，不要复用模型 API Key 或 Dashboard 密码 |
 | `OMBRE_DEHYDRATION_MODEL` | 否 | `deepseek-chat` | 脱水/打标/合并/拆分用的 LLM 模型名（覆盖 `dehydration.model`） |
 | `OMBRE_DEHYDRATION_BASE_URL` | 否 | `https://api.deepseek.com/v1` | 脱水模型的 API Base URL（覆盖 `dehydration.base_url`） |
 | `OMBRE_MODEL` | 否 | — | `OMBRE_DEHYDRATION_MODEL` 的别名（前者优先） |
@@ -20,6 +21,7 @@
 
 - `OMBRE_API_KEY` 也可在 `config.yaml` 的 `dehydration.api_key` / `embedding.api_key` 中设置，但**强烈建议**通过环境变量传入，避免密钥写入文件。
 - `OMBRE_DASHBOARD_PASSWORD` 设置后，Dashboard 的"修改密码"功能将被禁用（显示提示，建议直接修改环境变量）。未设置则密码存储在 `{buckets_dir}/.dashboard_auth.json`（SHA-256 + salt）。
+- 若启用小家里的「珂洛此刻」，请在 Ombre 与小家两个 Zeabur 服务中设置同一个高强度随机 `OMBRE_HOME_READ_TOKEN`。token 只放环境变量和 `Authorization: Bearer` 请求头，不放 URL、仓库或日志。
 
 ## Webhook 推送格式 (`OMBRE_HOOK_URL`)
 

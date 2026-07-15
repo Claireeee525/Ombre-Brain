@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import somatic_engine as E
 import somatic_state as S
 
+random.seed(20260715)
 passed = failed = 0
 
 
@@ -99,7 +100,7 @@ for _ in range(30):
 ok("执念反哺想念（被'想'高了，不是公式）", fed)
 ok("反哺够了执念了却出池", retired)
 a = E.apply_event({"drives": E.default_drives(), "refractory": {}, "thoughts": []},
-                  {"type": "mood", "mood": "missing", "label": "她说她想我了"})
+                  {"type": "mood", "mood": "missing", "label": "她说她想我了", "thoughtText": "我现在确实很想她"})
 ok("事件种下念头", len(a["thoughts"]) == 1 and a["thoughts"][0]["drive"] == "longing")
 ths = E.add_thought([], "昨天特别想留下", "longing", 0.5)
 ths = E.add_thought(ths, "昨天特别想留下", "longing", 0.5)
@@ -134,7 +135,7 @@ ok("分离漂移仍有界", all(0 <= sep2["drives"][k] <= 1 for k in E.DRIVE_KEY
 
 # 7. digest 拆分
 print("[digest]")
-evs = E.classify_digest("她安抚我说别怕。后来我们做爱了三次。她有点吃醋别人。")
+evs = E.classify_digest("Claire：她安抚我说别怕。后来我们做爱了三次。她有点吃醋别人。")
 types = [e.get("type") for e in evs]
 ok("digest 拆出多个事件", len(evs) >= 3)
 ok("识别出安抚", "reassure" in types)
@@ -156,4 +157,6 @@ ok("此刻最想支持组合状态", combo["want"] in [
 ])
 
 print(f"\n结果：{passed} 通过 / {failed} 失败")
-sys.exit(1 if failed else 0)
+if __name__ == "__main__":
+    sys.exit(1 if failed else 0)
+assert failed == 0
