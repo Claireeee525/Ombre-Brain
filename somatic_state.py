@@ -348,9 +348,12 @@ def apply_event(state, event, now_ms=None):
     eng = E.apply_event(eng_in, ev)
     derived = E.compute_derived(eng["drives"], eng.get("refractory"), _night(now_ms))
     log = list(base.get("events") or [])
-    log.append({"id": str(uuid.uuid4()), "schemaVersion": 2, "type": str(ev.get("type", "manual")),
-                "label": str(ev.get("label", "")), "detail": str(ev.get("detail") or ev.get("mood") or ""),
-                "createdAt": _now_iso(now_ms)})
+    event_row = {"id": str(uuid.uuid4()), "schemaVersion": 2, "type": str(ev.get("type", "manual")),
+                 "label": str(ev.get("label", "")), "detail": str(ev.get("detail") or ev.get("mood") or ""),
+                 "createdAt": _now_iso(now_ms)}
+    if ev.get("sourceFingerprint"):
+        event_row["sourceFingerprint"] = str(ev["sourceFingerprint"])[:80]
+    log.append(event_row)
     return _merge(base, eng, derived, {
         "updatedAt": _now_iso(now_ms),
         "lastContactAt": _now_iso(now_ms),

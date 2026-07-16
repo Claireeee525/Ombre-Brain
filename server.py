@@ -56,6 +56,12 @@ from dehydrator import Dehydrator
 from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
+from curator import (
+    aggregate_somatic_signals,
+    duplicate_similarity,
+    memory_fingerprint,
+    normalize_curate_payload,
+)
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 import somatic_state
 import nudge_engine
@@ -87,6 +93,14 @@ OMBRE_HOME_SYNC_URL = os.environ.get(
 # deliberately separate from OMBRE_API_KEY (model access) and the dashboard
 # password/session (human access).
 OMBRE_HOME_READ_TOKEN = os.environ.get("OMBRE_HOME_READ_TOKEN", "").strip()
+try:
+    CURATOR_DUPLICATE_THRESHOLD = max(
+        70.0,
+        min(98.0, float(os.environ.get("OMBRE_CURATOR_DUPLICATE_THRESHOLD", "84") or 84)),
+    )
+except ValueError:
+    logger.warning("OMBRE_CURATOR_DUPLICATE_THRESHOLD 不是合法数字，回退到 84")
+    CURATOR_DUPLICATE_THRESHOLD = 84.0
 
 
 def _is_bark_hook(url: str) -> bool:
@@ -427,7 +441,8 @@ async def breath_hook(request):
                       if not b["metadata"].get("resolved", False)
                       and b["metadata"].get("type") not in ("permanent", "feel")
                       and not b["metadata"].get("pinned")
-                      and not b["metadata"].get("protected")]
+                      and not b["metadata"].get("protected")
+                      and _curator_recallable(b["metadata"], False)]
         scored = sorted(unresolved, key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
 
         parts = []
@@ -482,6 +497,7 @@ async def dream_hook(request):
             if b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
+            and _curator_recallable(b["metadata"], False)
         ]
         candidates.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
         recent = candidates[:10]
@@ -598,6 +614,7 @@ async def breath(
     arousal: float = -1,
     max_results: int = 20,
     importance_min: int = -1,
+    include_candidates: bool = False,
 ) -> str:
     """【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
@@ -615,6 +632,7 @@ async def breath(
             b for b in all_buckets
             if int(b["metadata"].get("importance", 0)) >= importance_min
             and b["metadata"].get("type") not in ("feel",)
+            and _curator_recallable(b["metadata"], include_candidates)
         ]
         filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
         filtered = filtered[:20]
@@ -671,6 +689,7 @@ async def breath(
             and b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
+            and _curator_recallable(b["metadata"], include_candidates)
         ]
 
         logger.info(
@@ -783,6 +802,7 @@ async def breath(
             domain_filter=domain_filter,
             query_valence=q_valence,
             query_arousal=q_arousal,
+            include_candidates=include_candidates,
         )
     except Exception as e:
         logger.error(f"Search failed / 检索失败: {e}")
@@ -790,7 +810,11 @@ async def breath(
 
     # --- Exclude pinned/protected from search results (they surface in surfacing mode) ---
     # --- 搜索模式排除钉选桶（它们在浮现模式中始终可见）---
-    matches = [b for b in matches if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))]
+    matches = [
+        b for b in matches
+        if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+        and _curator_recallable(b["metadata"], include_candidates)
+    ]
 
     # --- Vector similarity channel: find semantically related buckets ---
     # --- 向量相似度通道：找到语义相关的桶 ---
@@ -800,7 +824,8 @@ async def breath(
         for bucket_id, sim_score in vector_results:
             if bucket_id not in matched_ids and sim_score > 0.5:
                 bucket = await bucket_mgr.get(bucket_id)
-                if bucket and not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
+                if (bucket and not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected"))
+                        and _curator_recallable(bucket["metadata"], include_candidates)):
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
                     matches.append(bucket)
@@ -998,6 +1023,238 @@ async def hold(
 
     action = "合并→" if is_merged else "新建→"
     return f"{action}{result_name} {','.join(domain)}"
+
+
+# =============================================================
+# Tool 2b: curate — Idempotent background memory admission
+# 工具 2b：curate —— 后台记忆秘书的幂等入库口
+# =============================================================
+def _curator_domain(item: dict) -> list[str]:
+    if item.get("domain"):
+        return item["domain"][:2]
+    return {
+        "lasting": ["恋爱"],
+        "event": ["回忆"],
+        "state": ["情绪"],
+        "dream": ["梦境"],
+    }.get(item.get("kind"), ["未分类"])
+
+
+def _curator_recallable(meta: dict, include_candidates: bool = False) -> bool:
+    status = str((meta or {}).get("memory_status") or "confirmed")
+    return status == "confirmed" or (include_candidates and status == "candidate")
+
+
+async def _curator_find_collision(item: dict, buckets: list[dict]):
+    """Use direct text/tag similarity and Jina vectors, never recall ranking."""
+    buckets_by_id = {bucket["id"]: bucket for bucket in buckets}
+    collision = None
+    collision_score = 0.0
+    for bucket in buckets:
+        if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") == "rejected":
+            continue
+        score = duplicate_similarity(item, bucket)
+        if score > collision_score:
+            collision, collision_score = bucket, score
+    try:
+        for bucket_id, raw_score in await embedding_engine.search_similar(item["content"], top_k=8):
+            bucket = buckets_by_id.get(bucket_id)
+            if not bucket or str(bucket.get("metadata", {}).get("memory_status") or "confirmed") == "rejected":
+                continue
+            vector_score = float(raw_score)
+            if vector_score <= 1.0:
+                vector_score *= 100.0
+            if vector_score > collision_score:
+                collision, collision_score = bucket, vector_score
+    except Exception as exc:
+        logger.warning(f"Curator vector duplicate search failed: {exc}")
+    if collision_score < CURATOR_DUPLICATE_THRESHOLD or not collision:
+        return None
+    return {**collision, "score": round(collision_score, 2)}
+
+
+@mcp.tool()
+async def curate(payload: str) -> str:
+    """【后台记忆秘书专用】幂等写入一批带会话/消息证据的记忆。手动 hold/grow 和既有记忆优先；相似命中会跳过。revision 永远新建为 candidate，不覆盖旧桶。payload 为 JSON 字符串。"""
+    await decay_engine.ensure_started()
+    try:
+        batch = normalize_curate_payload(payload)
+    except Exception as exc:
+        return _json_lib.dumps({"ok": False, "error": str(exc), "results": []}, ensure_ascii=False)
+
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=True)
+    except Exception as exc:
+        return _json_lib.dumps({"ok": False, "error": f"memory list failed: {exc}", "results": []}, ensure_ascii=False)
+
+    fingerprints = {
+        str(bucket.get("metadata", {}).get("source_fingerprint")): bucket
+        for bucket in all_buckets
+        if bucket.get("metadata", {}).get("source_fingerprint")
+    }
+    buckets_by_id = {bucket["id"]: bucket for bucket in all_buckets}
+    results = []
+    for item in batch["memories"]:
+        human_review = batch["source_kind"] == "herbier_review" and item["status"] == "confirmed"
+        fingerprint = item["source_fingerprint"]
+        previous = fingerprints.get(fingerprint)
+        if previous:
+            results.append({
+                "source_fingerprint": fingerprint,
+                "status": "duplicate_batch",
+                "bucket_id": previous["id"],
+                "memory_status": previous.get("metadata", {}).get("memory_status", "confirmed"),
+            })
+            continue
+
+        if human_review and item.get("supersedes"):
+            target = buckets_by_id.get(item["supersedes"])
+            target_meta = target.get("metadata", {}) if target else {}
+            if (not target
+                    or target_meta.get("source_kind") not in {"memory_secretary", "night_insight"}
+                    or str(target_meta.get("memory_status") or "confirmed") != "candidate"):
+                results.append({
+                    "source_fingerprint": fingerprint,
+                    "status": "invalid_supersedes",
+                    "error": "human review can supersede only an automatic candidate",
+                })
+                continue
+
+        collision = await _curator_find_collision(item, all_buckets)
+
+        if item["operation"] == "revision":
+            item["status"] = "candidate"
+            if (collision and collision.get("metadata", {}).get("memory_status") == "candidate"
+                    and collision.get("metadata", {}).get("source_kind") == "memory_secretary"):
+                results.append({
+                    "source_fingerprint": fingerprint,
+                    "status": "duplicate_candidate",
+                    "bucket_id": collision["id"],
+                    "score": collision.get("score", 0),
+                })
+                continue
+            if not item.get("supersedes") and collision:
+                item["supersedes"] = collision["id"]
+        elif collision and not (
+            human_review
+            and collision.get("metadata", {}).get("source_kind") in {"memory_secretary", "night_insight"}
+            and str(collision.get("metadata", {}).get("memory_status") or "confirmed") == "candidate"
+            and (not item.get("supersedes") or item.get("supersedes") == collision.get("id"))
+        ):
+            source_kind = str(collision.get("metadata", {}).get("source_kind") or "manual_or_legacy")
+            results.append({
+                "source_fingerprint": fingerprint,
+                "status": "duplicate_manual" if source_kind != "memory_secretary" else "duplicate_memory",
+                "bucket_id": collision["id"],
+                "score": collision.get("score", 0),
+            })
+            continue
+        elif collision and human_review and not item.get("supersedes"):
+            item["supersedes"] = collision["id"]
+
+        extra_metadata = {
+            "source_kind": batch["source_kind"],
+            "source_session_id": batch["session_id"],
+            "source_message_ids": item["evidence_message_ids"],
+            "source_fingerprint": fingerprint,
+            "memory_status": item["status"],
+            "confidence": item["confidence"],
+            "valid_from": item["valid_from"],
+            "valid_to": item["valid_to"],
+            "supersedes": item["supersedes"],
+            "operation": item["operation"],
+            "rationale": item["rationale"],
+            "batch_id": batch["batch_id"],
+        }
+        try:
+            bucket_id = await bucket_mgr.create(
+                content=item["content"],
+                tags=item["tags"],
+                importance=item["importance"],
+                domain=_curator_domain(item),
+                valence=item["valence"],
+                arousal=item["arousal"],
+                name=item["title"],
+                extra_metadata=extra_metadata,
+            )
+            try:
+                await embedding_engine.generate_and_store(bucket_id, item["content"])
+            except Exception:
+                pass
+            results.append({
+                "source_fingerprint": fingerprint,
+                "status": "created",
+                "bucket_id": bucket_id,
+                "memory_status": item["status"],
+                "operation": item["operation"],
+            })
+            fingerprints[fingerprint] = {"id": bucket_id, "metadata": extra_metadata}
+            created_bucket = {
+                "id": bucket_id,
+                "content": item["content"],
+                "metadata": {
+                    **extra_metadata,
+                    "name": item["title"],
+                    "tags": item["tags"],
+                    "domain": _curator_domain(item),
+                },
+            }
+            all_buckets.append(created_bucket)
+            buckets_by_id[bucket_id] = created_bucket
+            if human_review and item.get("supersedes"):
+                try:
+                    await bucket_mgr.update(
+                        item["supersedes"],
+                        memory_status="rejected",
+                        resolved=True,
+                        reviewed_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        review_decision="supersede",
+                        superseded_by=bucket_id,
+                    )
+                except Exception as exc:
+                    logger.warning(f"Curator supersede link failed: {exc}")
+        except Exception as exc:
+            logger.warning(f"Curator create failed: {exc}")
+            results.append({"source_fingerprint": fingerprint, "status": "error", "error": str(exc)})
+
+    ok = not any(result.get("status") in {"error", "invalid_supersedes"} for result in results)
+    return _json_lib.dumps({
+        "ok": ok,
+        "batch_id": batch["batch_id"],
+        "results": results,
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
+@mcp.tool()
+async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
+    """审核记忆秘书候选。confirm 只提升候选状态；reject/supersede 保留原文并沉底，永不删除或改写证据。"""
+    decision = str(decision or "confirm").strip().lower()
+    if decision not in {"confirm", "reject", "supersede"}:
+        return _json_lib.dumps({"ok": False, "error": "decision 只能是 confirm / reject / supersede"}, ensure_ascii=False)
+    bucket = await bucket_mgr.get(str(bucket_id or "").strip())
+    if not bucket:
+        return _json_lib.dumps({"ok": False, "error": "找不到这条候选记忆"}, ensure_ascii=False)
+    current_status = str(bucket.get("metadata", {}).get("memory_status") or "confirmed")
+    target_status = "confirmed" if decision == "confirm" else "rejected"
+    if current_status == target_status:
+        return _json_lib.dumps({
+            "ok": True,
+            "bucket_id": bucket["id"],
+            "memory_status": current_status,
+            "duplicate": True,
+        }, ensure_ascii=False)
+    if current_status != "candidate":
+        return _json_lib.dumps({"ok": False, "error": "只有候选记忆可以审核"}, ensure_ascii=False)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    updates = {
+        "memory_status": "confirmed" if decision == "confirm" else "rejected",
+        "reviewed_at": now,
+        "review_decision": decision,
+    }
+    if decision != "confirm":
+        updates["resolved"] = True
+    await bucket_mgr.update(bucket["id"], **updates)
+    return _json_lib.dumps({"ok": True, "bucket_id": bucket["id"], **updates}, ensure_ascii=False)
 
 
 # =============================================================
@@ -1266,6 +1523,47 @@ async def somatic_digest(text: str) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+async def somatic_integrate(payload: str) -> str:
+    """【后台记忆秘书专用】把一批对话的情绪余波合并成一次保守净更新。payload={signals:[{type,weight}],source_fingerprint,note}；同一 fingerprint 只应用一次。"""
+    try:
+        raw = _json_lib.loads(payload or "{}") if isinstance(payload, str) else payload
+    except Exception as exc:
+        return _json_lib.dumps({"ok": False, "error": f"身体净更新解析失败：{exc}"}, ensure_ascii=False)
+    if not isinstance(raw, dict):
+        return _json_lib.dumps({"ok": False, "error": "身体净更新必须是 JSON 对象"}, ensure_ascii=False)
+    source_fingerprint = str(raw.get("source_fingerprint") or raw.get("sourceFingerprint") or "").strip()[:80]
+    if not source_fingerprint:
+        return _json_lib.dumps({"ok": False, "error": "身体净更新缺少 source_fingerprint"}, ensure_ascii=False)
+    stored = somatic_state.read_state()
+    if source_fingerprint and any(
+        str(event.get("sourceFingerprint") or "") == source_fingerprint
+        for event in (stored.get("events") or [])
+    ):
+        return _json_lib.dumps({"ok": True, "applied": False, "duplicate": True}, ensure_ascii=False)
+    aggregate = aggregate_somatic_signals(raw.get("signals") or [])
+    if not aggregate["pulses"]:
+        return _json_lib.dumps({"ok": True, "applied": False, "reason": "no_residue"}, ensure_ascii=False)
+    dominant = aggregate.get("dominant") or "mixed"
+    event = {
+        "type": "memory_batch",
+        "label": "一段对话留下了一次合并后的身体余波",
+        "detail": dominant,
+        "pulses": aggregate["pulses"],
+        "sourceFingerprint": source_fingerprint,
+    }
+    state = somatic_state.apply_event(stored, event)
+    somatic_state.write_state(state)
+    top = " / ".join(f"{drive['label']}{drive['value']}" for drive in (state.get("topDrives") or [])[:4])
+    return _json_lib.dumps({
+        "ok": True,
+        "applied": True,
+        "signals": len(aggregate["signals"]),
+        "dominant": dominant,
+        "summary": f"现在：{state['dominantLabel']}（{state['feelTone']}）· 高驱动：{top}",
+    }, ensure_ascii=False)
+
+
 async def somatic_recover_echoes(limit: int = 12, dry_run: bool = True) -> str:
     """后台维护：仅从 v2 模板事件补录固定残响，不向远程 MCP 暴露。"""
     stored = somatic_state.read_state()
@@ -1342,6 +1640,11 @@ async def nudge_test_api(request):
 
 # --- 夜梦早安：夜间整理（日记 + 梦 + 明早的早安草稿 + 刷新家族摘要）---
 NIGHT_FAMILY_REFRESH_CAP = int(os.environ.get("OMBRE_NIGHT_FAMILY_REFRESH", "6") or 6)
+try:
+    NIGHT_INSIGHT_CAP = max(0, min(2, int(os.environ.get("OMBRE_NIGHT_INSIGHT_CAP", "2") or 2)))
+except ValueError:
+    logger.warning("OMBRE_NIGHT_INSIGHT_CAP 不是合法整数，回退到 2")
+    NIGHT_INSIGHT_CAP = 2
 
 
 def _night_section(tag, text):
@@ -1362,6 +1665,8 @@ async def _find_anniversaries(now):
         candidates = []
         for b in buckets:
             meta = b.get("metadata") or {}
+            if not _curator_recallable(meta, False):
+                continue
             created = str(meta.get("created") or "")[:10]
             try:
                 y, m, d = int(created[0:4]), int(created[5:7]), int(created[8:10])
@@ -1382,13 +1687,141 @@ async def _find_anniversaries(now):
     return lines
 
 
+async def _night_candidate_insights(now, limit=NIGHT_INSIGHT_CAP):
+    """Find possible cross-memory patterns, but admit them only as review candidates."""
+    if limit <= 0 or not getattr(dehydrator, "api_available", False):
+        return []
+    now_ms = int(now.timestamp() * 1000)
+    recent = []
+    try:
+        for bucket in await bucket_mgr.list_all(include_archive=False):
+            meta = bucket.get("metadata") or {}
+            if not _curator_recallable(meta, False) or meta.get("type") == "feel":
+                continue
+            created_ms = somatic_state._parse_iso_ms(meta.get("created"))
+            if not created_ms or not 0 <= now_ms - created_ms <= 14 * 24 * 3600 * 1000:
+                continue
+            recent.append({
+                "id": bucket["id"],
+                "name": meta.get("name") or bucket["id"],
+                "importance": int(meta.get("importance") or 5),
+                "content": strip_wikilinks(bucket.get("content") or "")[:360],
+            })
+    except Exception as exc:
+        logger.warning(f"Night insight scan failed: {exc}")
+        return []
+    recent.sort(key=lambda item: (-item["importance"], item["id"]))
+    recent = recent[:14]
+    if len(recent) < 2:
+        return []
+
+    prompt = (
+        "你是记忆系统的夜间整理员。下面每条都是已有记忆证据。请寻找最多两条跨记忆的新联系，"
+        "它们只能是待主人确认的理解，绝不能写成既定事实，也不能改写旧记忆。\n"
+        "只有在至少两条证据共同支持时才输出；没有可靠联系就输出空数组。严格输出 JSON："
+        '{"insights":[{"title":"短标题","content":"明确写成可能的理解",'
+        '"confidence":0.0,"importance":1,"tags":[],"domain":[],"evidence_bucket_ids":[],"rationale":"依据"}]}\n\n'
+        + "\n".join(
+            f"<memory id=\"{item['id']}\" name=\"{item['name']}\">{item['content']}</memory>"
+            for item in recent
+        )
+    )
+    try:
+        response = await dehydrator.client.chat.completions.create(
+            model=dehydrator.model,
+            max_tokens=700,
+            temperature=0.2,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = (response.choices[0].message.content or "").strip()
+        first, last = text.find("{"), text.rfind("}")
+        parsed = _json_lib.loads(text[first:last + 1] if first >= 0 and last > first else text)
+    except Exception as exc:
+        logger.warning(f"Night insight generation failed: {exc}")
+        return []
+
+    allowed_ids = {item["id"] for item in recent}
+    existing = await bucket_mgr.list_all(include_archive=True)
+    fingerprints = {
+        str(bucket.get("metadata", {}).get("source_fingerprint"))
+        for bucket in existing if bucket.get("metadata", {}).get("source_fingerprint")
+    }
+    created = []
+    for raw in (parsed.get("insights") if isinstance(parsed, dict) else []) or []:
+        if len(created) >= limit or not isinstance(raw, dict):
+            break
+        evidence = list(dict.fromkeys(
+            str(item)[:100] for item in (raw.get("evidence_bucket_ids") or [])
+            if str(item) in allowed_ids
+        ))[:8]
+        title = str(raw.get("title") or "").strip()[:120]
+        content = str(raw.get("content") or "").strip()[:1800]
+        if not title or not content or len(evidence) < 2:
+            continue
+        confidence = max(0.3, min(0.77, float(raw.get("confidence") or 0.55)))
+        importance = max(1, min(10, int(raw.get("importance") or 5)))
+        domain = [str(value).strip()[:40] for value in (raw.get("domain") or []) if str(value).strip()][:2] or ["关系理解"]
+        tags = [str(value).strip()[:40] for value in (raw.get("tags") or []) if str(value).strip()][:10]
+        item = {
+            "title": title,
+            "content": content,
+            "operation": "add",
+            "evidence_message_ids": evidence,
+            "supersedes": "",
+            "tags": tags,
+        }
+        fingerprint = memory_fingerprint(f"night:{now.strftime('%Y-%m-%d')}", item)
+        if fingerprint in fingerprints:
+            continue
+        try:
+            if await _curator_find_collision(item, existing):
+                continue
+            stored_tags = list(dict.fromkeys(["夜间候选", *tags]))
+            extra_metadata = {
+                "source_kind": "night_insight",
+                "source_session_id": f"night:{now.strftime('%Y-%m-%d')}",
+                "source_message_ids": evidence,
+                "source_fingerprint": fingerprint,
+                "memory_status": "candidate",
+                "confidence": confidence,
+                "operation": "add",
+                "rationale": str(raw.get("rationale") or "夜间发现的跨记忆联系，等待确认")[:240],
+                "batch_id": f"night:{now.strftime('%Y-%m-%d')}",
+            }
+            bucket_id = await bucket_mgr.create(
+                content=content,
+                name=title,
+                tags=stored_tags,
+                domain=domain,
+                importance=importance,
+                valence=0.5,
+                arousal=0.3,
+                extra_metadata=extra_metadata,
+            )
+            try:
+                await embedding_engine.generate_and_store(bucket_id, content)
+            except Exception:
+                pass
+            fingerprints.add(fingerprint)
+            existing.append({
+                "id": bucket_id,
+                "content": content,
+                "metadata": {**extra_metadata, "name": title, "tags": stored_tags, "domain": domain},
+            })
+            created.append(bucket_id)
+        except Exception as exc:
+            logger.warning(f"Night insight write failed: {exc}")
+    return created
+
+
 async def _run_night_ritual(now=None):
     """夜间整理。注意：这里绝不写身体事件流——任何事件都会重置分离计时，
     会让他误以为刚和 Claire 联系过，第二天早上的召唤力就假了。日记桶本身就是痕迹。"""
     now = now or nudge_engine.now_local()
     today = now.strftime("%Y-%m-%d")
     result = {"date": today, "diaryId": None, "hasDream": False, "hasDraft": False,
-              "eventsSeen": 0, "familiesRefreshed": 0, "anniversaries": 0}
+              "eventsSeen": 0, "familiesRefreshed": 0, "anniversaries": 0,
+              "candidateInsights": []}
 
     state = somatic_state.read_state()
     if state:
@@ -1478,6 +1911,10 @@ async def _run_night_ritual(now=None):
     except Exception as e:
         logger.warning(f"Night ritual family refresh failed: {e}")
 
+    # New interpretations are never promoted at night. They remain visible
+    # candidates with their source bucket IDs until Claire reviews them.
+    result["candidateInsights"] = await _night_candidate_insights(now)
+
     nudge_engine.record_night(dream, draft, result["diaryId"], now=now)
     result["hasDream"] = bool(dream)
     result["hasDraft"] = bool(draft)
@@ -1501,6 +1938,8 @@ async def _run_weekly_summary(now=None):
     try:
         for b in await bucket_mgr.list_all(include_archive=False):
             meta = b.get("metadata") or {}
+            if not _curator_recallable(meta, False):
+                continue
             ms = somatic_state._parse_iso_ms(meta.get("created"))
             if ms and 0 <= now_ms - ms <= 7 * 24 * 3600 * 1000:
                 recent.append((int(meta.get("importance") or 5), meta.get("name") or b["id"],
@@ -1656,7 +2095,11 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
     import datetime as _dt
     try:
         limit = max(40, min(int(limit or 220), 400))
-        all_buckets = await bucket_mgr.list_all(include_archive=include_archive)
+        stored_buckets = await bucket_mgr.list_all(include_archive=include_archive)
+        all_buckets = [
+            bucket for bucket in stored_buckets
+            if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") != "rejected"
+        ]
         families = family_engine._rows()
         family_by_member = {}
         for fam in families:
@@ -1699,6 +2142,14 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
                 "created": meta.get("created", ""),
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 1),
+                "memory_status": meta.get("memory_status", "confirmed"),
+                "confidence": meta.get("confidence"),
+                "source_kind": meta.get("source_kind", "legacy"),
+                "source_session_id": meta.get("source_session_id", ""),
+                "source_message_ids": meta.get("source_message_ids", []),
+                "operation": meta.get("operation", "add"),
+                "supersedes": meta.get("supersedes", ""),
+                "rationale": meta.get("rationale", ""),
                 "family_id": fam.get("id") if fam else None,
                 "content_preview": strip_wikilinks(bucket.get("content", ""))[:360],
             })
@@ -1728,15 +2179,21 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
             source_bucket = str(meta.get("source_bucket") or "").strip()
             if source_bucket and source_bucket in selected_ids:
                 edges.append({"source": source_bucket, "target": bucket["id"], "kind": "reflection"})
+            supersedes = str(meta.get("supersedes") or "").strip()
+            if supersedes and supersedes in selected_ids:
+                edges.append({"source": supersedes, "target": bucket["id"], "kind": "revision"})
 
         payload = {
             "source": "ombre_brain",
             "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
             "stats": {
                 "total": len(all_buckets),
+                "stored_total": len(stored_buckets),
+                "rejected_hidden": len(stored_buckets) - len(all_buckets),
                 "visible": len(nodes),
                 "families": len(graph_families),
                 "pinned": sum(1 for node in nodes if node["pinned"]),
+                "candidates": sum(1 for node in nodes if node["memory_status"] == "candidate"),
                 "archived_included": bool(include_archive),
             },
             "nodes": nodes,
@@ -1841,6 +2298,7 @@ async def dream() -> str:
         if b["metadata"].get("type") not in ("permanent", "feel")
         and not b["metadata"].get("pinned", False)
         and not b["metadata"].get("protected", False)
+        and _curator_recallable(b["metadata"], False)
     ]
 
     # --- Sort by creation time desc, take top 10 ---
@@ -1976,6 +2434,15 @@ async def api_buckets(request):
                 "created": meta.get("created", ""),
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 1),
+                "memory_status": meta.get("memory_status", "confirmed"),
+                "confidence": meta.get("confidence"),
+                "source_kind": meta.get("source_kind", "legacy"),
+                "source_session_id": meta.get("source_session_id", ""),
+                "source_message_ids": meta.get("source_message_ids", []),
+                "source_fingerprint": meta.get("source_fingerprint", ""),
+                "operation": meta.get("operation", "add"),
+                "supersedes": meta.get("supersedes", ""),
+                "rationale": meta.get("rationale", ""),
                 "score": decay_engine.calculate_score(meta),
                 "content_preview": strip_wikilinks(b.get("content", ""))[:200],
             })

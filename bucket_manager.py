@@ -110,6 +110,7 @@ class BucketManager:
         name: str = None,
         pinned: bool = False,
         protected: bool = False,
+        extra_metadata: dict = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -152,6 +153,22 @@ class BucketManager:
             metadata["pinned"] = True
         if protected:
             metadata["protected"] = True
+
+        allowed_extra = {
+            "source_kind", "source_session_id", "source_message_ids", "source_fingerprint",
+            "memory_status", "confidence", "valid_from", "valid_to", "supersedes",
+            "superseded_by", "operation", "rationale", "reviewed_at", "review_decision",
+            "batch_id",
+        }
+        for key, value in (extra_metadata or {}).items():
+            if key not in allowed_extra or value is None:
+                continue
+            if key == "source_message_ids":
+                metadata[key] = [str(item)[:100] for item in (value or []) if str(item).strip()][:12]
+            elif key == "confidence":
+                metadata[key] = max(0.0, min(1.0, float(value)))
+            elif isinstance(value, (str, int, float, bool)):
+                metadata[key] = value
 
         # --- Assemble Markdown file (frontmatter + body) ---
         # --- 组装 Markdown 文件 ---
@@ -282,6 +299,11 @@ class BucketManager:
             post["digested"] = bool(kwargs["digested"])
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
+        for key in ("memory_status", "reviewed_at", "review_decision", "superseded_by"):
+            if key in kwargs:
+                post[key] = str(kwargs[key])[:180]
+        if "confidence" in kwargs:
+            post["confidence"] = max(0.0, min(1.0, float(kwargs["confidence"])))
 
         # --- Auto-refresh activation time / 自动刷新激活时间 ---
         post["last_active"] = now_iso()
@@ -443,6 +465,7 @@ class BucketManager:
         domain_filter: list[str] = None,
         query_valence: float = None,
         query_arousal: float = None,
+        include_candidates: bool = False,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -456,6 +479,11 @@ class BucketManager:
 
         limit = limit or self.max_results
         all_buckets = await self.list_all(include_archive=False)
+        all_buckets = [
+            bucket for bucket in all_buckets
+            if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") == "confirmed"
+            or (include_candidates and bucket.get("metadata", {}).get("memory_status") == "candidate")
+        ]
 
         if not all_buckets:
             return []
