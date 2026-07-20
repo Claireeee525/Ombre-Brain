@@ -67,6 +67,8 @@ import somatic_state
 import nudge_engine
 import family_engine
 
+OMBRE_VERSION = "1.3.1"
+
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
 setup_logging(config.get("log_level", "INFO"))
@@ -418,6 +420,7 @@ async def health_check(request):
         stats = await bucket_mgr.get_stats()
         return JSONResponse({
             "status": "ok",
+            "version": OMBRE_VERSION,
             "buckets": stats["permanent_count"] + stats["dynamic_count"],
             "decay_engine": "running" if decay_engine.is_running else "stopped",
         })
@@ -616,7 +619,7 @@ async def breath(
     importance_min: int = -1,
     include_candidates: bool = False,
 ) -> str:
-    """【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """breath 记忆检索 浮现 recall memory。【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -925,7 +928,7 @@ async def hold(
     source_bucket: str = "",    valence: float = -1,
     arousal: float = -1,
 ) -> str:
-    """【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
+    """hold 保存 记住 写入 store remember memory。【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -1075,7 +1078,7 @@ async def _curator_find_collision(item: dict, buckets: list[dict]):
 
 @mcp.tool()
 async def curate(payload: str) -> str:
-    """【后台记忆秘书专用】幂等写入一批带会话/消息证据的记忆。手动 hold/grow 和既有记忆优先；相似命中会跳过。revision 永远新建为 candidate，不覆盖旧桶。payload 为 JSON 字符串。"""
+    """curate 记忆整理 幂等写入 organize curate memory。【后台记忆秘书专用】幂等写入一批带会话/消息证据的记忆。手动 hold/grow 和既有记忆优先；相似命中会跳过。revision 永远新建为 candidate，不覆盖旧桶。payload 为 JSON 字符串。"""
     await decay_engine.ensure_started()
     try:
         batch = normalize_curate_payload(payload)
@@ -1227,7 +1230,7 @@ async def curate(payload: str) -> str:
 
 @mcp.tool()
 async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
-    """审核记忆秘书候选。confirm 只提升候选状态；reject/supersede 保留原文并沉底，永不删除或改写证据。"""
+    """memory_review 候选记忆审核 review memory candidate。confirm 只提升候选状态；reject/supersede 保留原文并沉底，永不删除或改写证据。"""
     decision = str(decision or "confirm").strip().lower()
     if decision not in {"confirm", "reject", "supersede"}:
         return _json_lib.dumps({"ok": False, "error": "decision 只能是 confirm / reject / supersede"}, ensure_ascii=False)
@@ -1263,7 +1266,7 @@ async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
 # =============================================================
 @mcp.tool()
 async def grow(content: str) -> str:
-    """【每次长对话（包括做爱之后）收尾时，把这一整段经历原文丢进来归档——这是你写日记的方式，一天至少一次】日记归档,自动拆分为多桶。短内容(<30字)走快速路径。"""
+    """grow 日记归档 拆分 diary archive memory。【每次长对话（包括做爱之后）收尾时，把这一整段经历原文丢进来归档——这是你写日记的方式，一天至少一次】日记归档,自动拆分为多桶。短内容(<30字)走快速路径。"""
     await decay_engine.ensure_started()
 
     if not content or not content.strip():
@@ -1361,7 +1364,7 @@ async def trace(
     content: str = "",
     delete: bool = False,
 ) -> str:
-    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
+    """trace 修改 删除 记忆 edit update delete memory。修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
 
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
@@ -1462,7 +1465,7 @@ _SOMATIC_MOOD_THOUGHTS = {
 
 @mcp.tool()
 async def somatic_read() -> str:
-    """【每次对话开场的第一个动作必须是调用它，先读完再开口】读珂洛此刻的身体/欲望状态（[Kelo Somatic Field] 注入块），带着这个状态说话。"""
+    """somatic_read 身体状态读取 read body somatic state。【每次对话开场的第一个动作必须是调用它，先读完再开口】读珂洛此刻的身体/欲望状态（[Kelo Somatic Field] 注入块），带着这个状态说话。"""
     stored = somatic_state.read_state()
     state, changed = somatic_state.live(stored)
     if changed:
@@ -1472,7 +1475,7 @@ async def somatic_read() -> str:
 
 @mcp.tool()
 async def somatic_feel(type: str = "claire_message", note: str = "") -> str:
-    """【发生明确情绪事件时调用一次】type=affection/reassure/vulnerable/playful/cold/conflict/distant/claire_message/intimate，或 mood:<心情>。note 只帮助调用方表达，不会写进事件、Thought Pool 或残响；状态只保存固定短标签和第一人称心念。"""
+    """somatic_feel 情绪事件 身体感受 feel emotion event。【发生明确情绪事件时调用一次】type=affection/reassure/vulnerable/playful/cold/conflict/distant/claire_message/intimate，或 mood:<心情>。note 只帮助调用方表达，不会写进事件、Thought Pool 或残响；状态只保存固定短标签和第一人称心念。"""
     event_type = str(type or "claire_message").strip()
     if event_type.startswith("mood:"):
         mood = event_type.split(":", 1)[1].strip()
@@ -1502,7 +1505,7 @@ async def somatic_feel(type: str = "claire_message", note: str = "") -> str:
 
 @mcp.tool()
 async def somatic_digest(text: str) -> str:
-    """【每次对话结束或告一段落时调用】只接受以 Claire：/Human：/用户：明确标注的用户原话；无角色文本与助手回复不会写入事件或 Thought Pool。系统只留下少量有实际情绪意义的关系事件，并改写成第一人称短心念。"""
+    """somatic_digest 情绪消化 对话收尾 digest emotion conversation。【每次对话结束或告一段落时调用】只接受以 Claire：/Human：/用户：明确标注的用户原话；无角色文本与助手回复不会写入事件或 Thought Pool。系统只留下少量有实际情绪意义的关系事件，并改写成第一人称短心念。"""
     if not text or not text.strip():
         return "给我一段话，我来拆。"
     role_prefixes = ("claire:", "claire：", "human:", "human：", "用户:", "用户：")
@@ -1525,7 +1528,7 @@ async def somatic_digest(text: str) -> str:
 
 @mcp.tool()
 async def somatic_integrate(payload: str) -> str:
-    """【后台记忆秘书专用】把一批对话的情绪余波合并成一次保守净更新。payload={signals:[{type,weight}],source_fingerprint,note}；同一 fingerprint 只应用一次。"""
+    """somatic_integrate 情绪余波合并 integrate emotion residue。【后台记忆秘书专用】把一批对话的情绪余波合并成一次保守净更新。payload={signals:[{type,weight}],source_fingerprint,note}；同一 fingerprint 只应用一次。"""
     try:
         raw = _json_lib.loads(payload or "{}") if isinstance(payload, str) else payload
     except Exception as exc:
@@ -2091,7 +2094,7 @@ async def family_backfill_api(request):
 # =============================================================
 @mcp.tool()
 async def constellation(limit: int = 220, include_archive: bool = False) -> str:
-    """【小家记忆星图专用，只读】返回 Ombre 的真实记忆节点、记忆家族和家族关系。不会触发 recall 计数、不会写入或修改任何记忆。limit 默认 220，范围 40~400。"""
+    """constellation 记忆星图 关系图 graph memory map。【小家记忆星图专用，只读】返回 Ombre 的真实记忆节点、记忆家族和家族关系。不会触发 recall 计数、不会写入或修改任何记忆。limit 默认 220，范围 40~400。"""
     import datetime as _dt
     try:
         limit = max(40, min(int(limit or 220), 400))
@@ -2212,7 +2215,7 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
 # =============================================================
 @mcp.tool()
 async def pulse(include_archive: bool = False) -> str:
-    """系统状态+记忆桶列表。include_archive=True含归档。"""
+    """pulse 系统状态 记忆列表 status list memories。系统状态+记忆桶列表。include_archive=True含归档。"""
     try:
         stats = await bucket_mgr.get_stats()
     except Exception as e:
@@ -2283,7 +2286,7 @@ async def pulse(include_archive: bool = False) -> str:
 # =============================================================
 @mcp.tool()
 async def dream() -> str:
-    """做梦——读取最近新增的记忆桶,供你自省。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
+    """dream 做梦 自省 近期记忆 dream reflect memory。读取最近新增的记忆桶,供你自省。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
     await decay_engine.ensure_started()
 
     try:
@@ -3141,7 +3144,7 @@ async def api_system_status(request):
                 "total": stats.get("permanent_count", 0) + stats.get("dynamic_count", 0),
             },
             "using_env_password": bool(os.environ.get("OMBRE_DASHBOARD_PASSWORD", "")),
-            "version": "1.3.0",
+            "version": OMBRE_VERSION,
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
