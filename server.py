@@ -2248,10 +2248,11 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
 # 工具 5b：herbier —— 小家藏页读取 Ombre 唯一真本（只读）
 # =============================================================
 @mcp.tool()
-async def herbier(limit: int = 400, include_archive: bool = False) -> str:
-    """herbier 记忆藏页 目录 browse catalogue memory。【小家 Herbier 专用，只读】按时间返回 Ombre 的真实记忆正文、审核状态和来源署名；不会触发 recall 计数，也不会复制或修改记忆。limit 默认 400，范围 20~800。"""
+async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = False) -> str:
+    """herbier 记忆藏页 目录 browse catalogue memory。【小家 Herbier 专用，只读】分页返回 Ombre 的真实记忆正文、审核状态和来源署名；不会触发 recall 计数，也不会复制或修改记忆。limit 默认100，范围20~200；offset 从0开始。"""
     try:
-        limit = max(20, min(int(limit or 400), 800))
+        limit = max(20, min(int(limit or 100), 200))
+        offset = max(0, int(offset or 0))
         stored = await bucket_mgr.list_all(include_archive=include_archive)
         visible = [
             bucket for bucket in stored
@@ -2266,7 +2267,7 @@ async def herbier(limit: int = 400, include_archive: bool = False) -> str:
             reverse=True,
         )
         pages = []
-        for bucket in visible[:limit]:
+        for bucket in visible[offset:offset + limit]:
             meta = bucket.get("metadata", {})
             pages.append({
                 "id": bucket["id"],
@@ -2303,6 +2304,13 @@ async def herbier(limit: int = 400, include_archive: bool = False) -> str:
             "source": "ombre_brain",
             "scope": "home_shared",
             "total": len(visible),
+            "candidate_total": sum(
+                1 for bucket in visible
+                if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") == "candidate"
+            ),
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + limit < len(visible),
             "pages": pages,
         }, ensure_ascii=False, separators=(",", ":"))
     except Exception as exc:

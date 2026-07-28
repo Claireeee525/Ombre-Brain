@@ -36,6 +36,10 @@ async def test_every_official_tool_description_starts_with_its_name_and_aliases(
         assert description.lower().startswith(name.lower())
         for alias in aliases:
             assert alias.lower() in description.lower()
+    herbier_schema = tools["herbier"].inputSchema
+    assert "offset" in herbier_schema["properties"]
+    assert herbier_schema["properties"]["offset"]["default"] == 0
+    assert herbier_schema["properties"]["limit"]["default"] == 100
 
 
 @pytest.mark.asyncio
