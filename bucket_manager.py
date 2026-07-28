@@ -317,6 +317,22 @@ class BucketManager:
         for key in ("signed_by", "evidence_speakers", "participants", "source_message_ids"):
             if key in kwargs:
                 post[key] = [str(item)[:100] for item in (kwargs[key] or []) if str(item).strip()][:12]
+        if "agent_stances" in kwargs:
+            stances = []
+            for item in kwargs["agent_stances"] or []:
+                if not isinstance(item, dict):
+                    continue
+                actor = str(item.get("actor") or "").strip()[:40]
+                stance = str(item.get("stance") or "").strip()[:24]
+                if not actor or not stance:
+                    continue
+                stances.append({
+                    "actor": actor,
+                    "stance": stance,
+                    "note": str(item.get("note") or "").strip()[:500],
+                    "updated_at": str(item.get("updated_at") or "").strip()[:80],
+                })
+            post["agent_stances"] = stances[:4]
         for key in ("memory_scope", "curated_by", "source_surface", "source_session_id", "source_kind"):
             if key in kwargs:
                 post[key] = str(kwargs[key])[:180]

@@ -68,7 +68,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.4.0"
+OMBRE_VERSION = "1.4.1"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -620,6 +620,21 @@ async def _merge_or_create(
 # With args: search by keyword + emotion coordinates
 # 有参数：按关键词+情感坐标检索记忆
 # =============================================================
+def _agent_stance_recall_line(meta: dict) -> str:
+    labels = {"claim": "认同", "hold": "保留", "reject": "否认"}
+    parts = []
+    for item in (meta or {}).get("agent_stances", []) or []:
+        if not isinstance(item, dict):
+            continue
+        actor = str(item.get("actor") or "").strip()
+        label = labels.get(str(item.get("stance") or "").strip())
+        if not actor or not label:
+            continue
+        note = str(item.get("note") or "").strip()
+        parts.append(f"{actor}={label}" + (f"（{note}）" if note else ""))
+    return f"\n[页边表态: {'；'.join(parts)}]" if parts else ""
+
+
 @mcp.tool()
 async def breath(
     query: str = "",
@@ -691,6 +706,7 @@ async def breath(
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                summary += _agent_stance_recall_line(b["metadata"])
                 pinned_results.append(f"📌 [核心准则] [bucket_id:{b['id']}] {summary}")
             except Exception as e:
                 logger.warning(f"Failed to dehydrate pinned bucket / 钉选桶脱水失败: {e}")
@@ -762,6 +778,7 @@ async def breath(
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                summary += _agent_stance_recall_line(b["metadata"])
                 summary_tokens = count_tokens_approx(summary)
                 if summary_tokens > token_budget:
                     break
@@ -881,6 +898,7 @@ async def breath(
                 shift = (q_valence - 0.5) * 0.2  # ±0.1 max shift
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
             summary = await dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
+            summary += _agent_stance_recall_line(bucket["metadata"])
             summary_tokens = count_tokens_approx(summary)
             if token_used + summary_tokens > max_tokens:
                 break
@@ -912,6 +930,7 @@ async def breath(
                 for b in drifted:
                     clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                    summary += _agent_stance_recall_line(b["metadata"])
                     drift_results.append(f"[surface_type: random]\n{summary}")
                 results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
         except Exception as e:
@@ -1292,6 +1311,47 @@ async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
         updates["resolved"] = True
     await bucket_mgr.update(bucket["id"], **updates)
     return _json_lib.dumps({"ok": True, "bucket_id": bucket["id"], **updates}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def memory_stance(bucket_id: str, actor: str, stance: str, note: str = "") -> str:
+    """memory_stance 记忆表态 annotate memory。让珂洛或Calder在同一份共同记忆上分别认同、保留、否认或清除自己的表态；只写旁注，不拆库、不改正文。"""
+    actor_aliases = {
+        "珂洛": "珂洛",
+        "kelo": "珂洛",
+        "kael": "珂洛",
+        "calder": "Calder",
+    }
+    normalized_actor = actor_aliases.get(str(actor or "").strip().lower())
+    if not normalized_actor:
+        return _json_lib.dumps({"ok": False, "error": "actor 只能是珂洛或 Calder"}, ensure_ascii=False)
+    normalized_stance = str(stance or "").strip().lower()
+    if normalized_stance not in {"claim", "hold", "reject", "clear"}:
+        return _json_lib.dumps({"ok": False, "error": "stance 只能是 claim / hold / reject / clear"}, ensure_ascii=False)
+    bucket = await bucket_mgr.get(str(bucket_id or "").strip())
+    if not bucket:
+        return _json_lib.dumps({"ok": False, "error": "找不到这条记忆"}, ensure_ascii=False)
+
+    existing = bucket.get("metadata", {}).get("agent_stances", [])
+    stances = [
+        item for item in existing
+        if isinstance(item, dict) and str(item.get("actor") or "").strip() != normalized_actor
+    ]
+    if normalized_stance != "clear":
+        stances.append({
+            "actor": normalized_actor,
+            "stance": normalized_stance,
+            "note": str(note or "").strip()[:500],
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        })
+    ok = await bucket_mgr.update(bucket["id"], agent_stances=stances)
+    return _json_lib.dumps({
+        "ok": bool(ok),
+        "bucket_id": bucket["id"],
+        "actor": normalized_actor,
+        "stance": normalized_stance,
+        "agent_stances": stances,
+    }, ensure_ascii=False)
 
 
 # =============================================================
@@ -2322,6 +2382,7 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
                 "operation": meta.get("operation", "add"),
                 "supersedes": meta.get("supersedes", ""),
                 "rationale": meta.get("rationale", ""),
+                "agent_stances": meta.get("agent_stances", []),
             })
         return _json_lib.dumps({
             "source": "ombre_brain",
