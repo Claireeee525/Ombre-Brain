@@ -34,6 +34,7 @@
 
 import os
 import sys
+import re
 import random
 import logging
 import asyncio
@@ -2247,6 +2248,21 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
 # Tool 5b: herbier — canonical read-only memory catalogue
 # 工具 5b：herbier —— 小家藏页读取 Ombre 唯一真本（只读）
 # =============================================================
+def _herbier_memory_kind(bucket: dict) -> str:
+    meta = bucket.get("metadata", {})
+    if meta.get("pinned") or meta.get("protected") or meta.get("type") == "permanent":
+        return "lasting"
+    words = " ".join([
+        *[str(item) for item in (meta.get("domain") or [])],
+        *[str(item) for item in (meta.get("tags") or [])],
+    ])
+    if re.search(r"梦境|梦|dream", words, re.I):
+        return "dream"
+    if re.search(r"状态|情绪|身体|潮汐|health|wellbeing", words, re.I):
+        return "state"
+    return "event"
+
+
 @mcp.tool()
 async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = False) -> str:
     """herbier 记忆藏页 目录 browse catalogue memory。【小家 Herbier 专用，只读】分页返回 Ombre 的真实记忆正文、审核状态和来源署名；不会触发 recall 计数，也不会复制或修改记忆。limit 默认100，范围20~200；offset 从0开始。"""
@@ -2266,6 +2282,13 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
             ),
             reverse=True,
         )
+        lens_counts = {"all": len(visible), "candidate": 0, "lasting": 0, "event": 0, "state": 0, "dream": 0}
+        for bucket in visible:
+            status = str(bucket.get("metadata", {}).get("memory_status") or "confirmed")
+            if status == "candidate":
+                lens_counts["candidate"] += 1
+            kind = _herbier_memory_kind(bucket)
+            lens_counts[kind] += 1
         pages = []
         for bucket in visible[offset:offset + limit]:
             meta = bucket.get("metadata", {})
@@ -2304,10 +2327,8 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
             "source": "ombre_brain",
             "scope": "home_shared",
             "total": len(visible),
-            "candidate_total": sum(
-                1 for bucket in visible
-                if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") == "candidate"
-            ),
+            "candidate_total": lens_counts["candidate"],
+            "lens_counts": lens_counts,
             "offset": offset,
             "limit": limit,
             "has_more": offset + limit < len(visible),

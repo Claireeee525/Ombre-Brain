@@ -58,5 +58,12 @@ async def test_public_health_exposes_the_deployed_version(monkeypatch):
     assert payload["buckets"] == 5
 
 
+def test_herbier_full_catalogue_lenses_use_bucket_metadata():
+    assert server._herbier_memory_kind({"metadata": {"pinned": True}}) == "lasting"
+    assert server._herbier_memory_kind({"metadata": {"domain": ["梦境"]}}) == "dream"
+    assert server._herbier_memory_kind({"metadata": {"tags": ["身体状态"]}}) == "state"
+    assert server._herbier_memory_kind({"metadata": {"domain": ["回忆"]}}) == "event"
+
+
 async def _async_value(value):
     return value
