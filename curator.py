@@ -26,6 +26,18 @@ def _clamp(value: Any, low: float, high: float, fallback: float) -> float:
     return max(low, min(high, number))
 
 
+def _text_list(value: Any, limit: int = 8, item_limit: int = 40) -> list[str]:
+    if isinstance(value, str):
+        values = [part.strip() for part in value.replace("，", ",").split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = []
+    return list(dict.fromkeys(
+        _text(item, item_limit) for item in values if _text(item, item_limit)
+    ))[:limit]
+
+
 def memory_fingerprint(session_id: str, item: dict) -> str:
     evidence = sorted(str(value)[:100] for value in item.get("evidence_message_ids", []) if value)
     raw = json.dumps([
@@ -91,6 +103,14 @@ def normalize_curate_payload(value: Any) -> dict:
             _text(item, 100) for item in (raw.get("evidence_message_ids") or raw.get("evidenceMessageIds") or [])
             if _text(item, 100) and (not allowed_ids or _text(item, 100) in allowed_ids)
         ][:12]
+        evidence_quotes = []
+        for quote in (raw.get("evidence_quotes") or raw.get("evidenceQuotes") or [])[:12]:
+            if not isinstance(quote, dict):
+                continue
+            message_id = _text(quote.get("message_id") or quote.get("messageId"), 100)
+            text = _text(quote.get("quote"), 320)
+            if message_id and text and (not allowed_ids or message_id in allowed_ids):
+                evidence_quotes.append({"message_id": message_id, "quote": text})
         confidence = _clamp(raw.get("confidence"), 0.0, 1.0, 0.7)
         if operation == "revision" or raw.get("inferred") or not evidence or confidence < 0.78:
             status = "candidate"
@@ -111,10 +131,20 @@ def normalize_curate_payload(value: Any) -> dict:
             "valence": round(_clamp(raw.get("valence"), 0.0, 1.0, 0.5), 2),
             "arousal": round(_clamp(raw.get("arousal"), 0.0, 1.0, 0.3), 2),
             "evidence_message_ids": list(dict.fromkeys(evidence)),
+            "evidence_quotes": evidence_quotes,
             "valid_from": _text(raw.get("valid_from") or raw.get("validFrom"), 40),
             "valid_to": _text(raw.get("valid_to") or raw.get("validTo"), 40),
             "supersedes": _text(raw.get("supersedes") or raw.get("supersedes_bucket_id"), 100),
             "rationale": _text(raw.get("rationale"), 240),
+            # One shared home pool. These fields describe provenance, never access.
+            "memory_scope": _text(raw.get("memory_scope") or raw.get("memoryScope") or "home_shared", 40),
+            "signed_by": _text_list(raw.get("signed_by") or raw.get("signedBy"), 4),
+            "evidence_speakers": _text_list(
+                raw.get("evidence_speakers") or raw.get("evidenceSpeakers"), 8
+            ),
+            "participants": _text_list(raw.get("participants"), 8),
+            "curated_by": _text(raw.get("curated_by") or raw.get("curatedBy") or "sonnet_secretary", 60),
+            "source_surface": _text(raw.get("source_surface") or raw.get("sourceSurface") or "kelo_home", 60),
         }
         item["source_fingerprint"] = _text(raw.get("source_fingerprint") or raw.get("sourceFingerprint"), 64) or memory_fingerprint(session_id, item)
         memories.append(item)

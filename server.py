@@ -67,7 +67,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.3.1"
+OMBRE_VERSION = "1.4.0"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -540,6 +540,7 @@ async def _merge_or_create(
     valence: float,
     arousal: float,
     name: str = "",
+    extra_metadata: dict | None = None,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -564,6 +565,14 @@ async def _merge_or_create(
                 old_a = bucket["metadata"].get("arousal", 0.3)
                 merged_valence = round((old_v + valence) / 2, 2)
                 merged_arousal = round((old_a + arousal) / 2, 2)
+                provenance_updates = {}
+                for key in ("signed_by", "evidence_speakers", "participants", "source_message_ids"):
+                    combined = list(bucket["metadata"].get(key, []) or []) + list((extra_metadata or {}).get(key, []) or [])
+                    if combined:
+                        provenance_updates[key] = list(dict.fromkeys(str(item) for item in combined if str(item).strip()))[:12]
+                for key in ("memory_scope", "curated_by", "source_surface", "source_session_id", "source_kind"):
+                    if (extra_metadata or {}).get(key):
+                        provenance_updates[key] = (extra_metadata or {})[key]
                 await bucket_mgr.update(
                     bucket["id"],
                     content=merged,
@@ -572,6 +581,7 @@ async def _merge_or_create(
                     domain=list(set(bucket["metadata"].get("domain", []) + domain)),
                     valence=merged_valence,
                     arousal=merged_arousal,
+                    **provenance_updates,
                 )
                 # --- Update embedding after merge ---
                 try:
@@ -590,6 +600,7 @@ async def _merge_or_create(
         valence=valence,
         arousal=arousal,
         name=name or None,
+        extra_metadata=extra_metadata,
     )
     # --- Generate embedding for new bucket ---
     try:
@@ -927,8 +938,11 @@ async def hold(
     feel: bool = False,
     source_bucket: str = "",    valence: float = -1,
     arousal: float = -1,
+    signed_by: str = "",
+    source_surface: str = "",
+    source_session_id: str = "",
 ) -> str:
-    """hold 保存 记住 写入 store remember memory。【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
+    """hold 保存 记住 写入 store remember memory。【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条共同记忆,自动打标+合并。珂洛与Calder读写同一个池；signed_by请填本次经手者(珂洛或Calder)，只作署名不作隔离。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -992,6 +1006,16 @@ async def hold(
     final_arousal = arousal if 0 <= arousal <= 1 else auto_arousal
 
     all_tags = list(dict.fromkeys(auto_tags + extra_tags))
+    provenance = {
+        "memory_scope": "home_shared",
+        "signed_by": [signed_by.strip()] if signed_by.strip() else [],
+        "participants": [signed_by.strip()] if signed_by.strip() else [],
+        "curated_by": signed_by.strip() or "direct_hold",
+        "source_surface": source_surface.strip() or "Claude official",
+        "source_session_id": source_session_id.strip(),
+        "source_kind": "direct_hold",
+        "memory_status": "confirmed",
+    }
 
     # --- Pinned buckets bypass merge and are created directly in permanent dir ---
     # --- 钉选桶跳过合并，直接新建到 permanent 目录 ---
@@ -1006,6 +1030,7 @@ async def hold(
             name=suggested_name or None,
             bucket_type="permanent",
             pinned=True,
+            extra_metadata=provenance,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -1022,6 +1047,7 @@ async def hold(
         valence=final_valence,
         arousal=final_arousal,
         name=suggested_name,
+        extra_metadata=provenance,
     )
 
     action = "合并→" if is_merged else "新建→"
@@ -1114,7 +1140,7 @@ async def curate(payload: str) -> str:
             target = buckets_by_id.get(item["supersedes"])
             target_meta = target.get("metadata", {}) if target else {}
             if (not target
-                    or target_meta.get("source_kind") not in {"memory_secretary", "night_insight"}
+                    or target_meta.get("source_kind") not in {"memory_secretary", "night_insight", "herbier_review"}
                     or str(target_meta.get("memory_status") or "confirmed") != "candidate"):
                 results.append({
                     "source_fingerprint": fingerprint,
@@ -1140,7 +1166,7 @@ async def curate(payload: str) -> str:
                 item["supersedes"] = collision["id"]
         elif collision and not (
             human_review
-            and collision.get("metadata", {}).get("source_kind") in {"memory_secretary", "night_insight"}
+            and collision.get("metadata", {}).get("source_kind") in {"memory_secretary", "night_insight", "herbier_review"}
             and str(collision.get("metadata", {}).get("memory_status") or "confirmed") == "candidate"
             and (not item.get("supersedes") or item.get("supersedes") == collision.get("id"))
         ):
@@ -1159,6 +1185,7 @@ async def curate(payload: str) -> str:
             "source_kind": batch["source_kind"],
             "source_session_id": batch["session_id"],
             "source_message_ids": item["evidence_message_ids"],
+            "evidence_quotes": item["evidence_quotes"],
             "source_fingerprint": fingerprint,
             "memory_status": item["status"],
             "confidence": item["confidence"],
@@ -1168,6 +1195,12 @@ async def curate(payload: str) -> str:
             "operation": item["operation"],
             "rationale": item["rationale"],
             "batch_id": batch["batch_id"],
+            "memory_scope": item["memory_scope"],
+            "signed_by": item["signed_by"],
+            "evidence_speakers": item["evidence_speakers"],
+            "participants": item["participants"],
+            "curated_by": item["curated_by"],
+            "source_surface": item["source_surface"],
         }
         try:
             bucket_id = await bucket_mgr.create(
@@ -2150,6 +2183,7 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
                 "source_kind": meta.get("source_kind", "legacy"),
                 "source_session_id": meta.get("source_session_id", ""),
                 "source_message_ids": meta.get("source_message_ids", []),
+                "evidence_quotes": meta.get("evidence_quotes", []),
                 "operation": meta.get("operation", "add"),
                 "supersedes": meta.get("supersedes", ""),
                 "rationale": meta.get("rationale", ""),
@@ -2207,6 +2241,79 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
     except Exception as exc:
         logger.exception("Constellation export failed")
         return _json_lib.dumps({"source": "ombre_brain", "error": str(exc), "nodes": [], "edges": [], "families": []}, ensure_ascii=False)
+
+
+# =============================================================
+# Tool 5b: herbier — canonical read-only memory catalogue
+# 工具 5b：herbier —— 小家藏页读取 Ombre 唯一真本（只读）
+# =============================================================
+@mcp.tool()
+async def herbier(limit: int = 400, include_archive: bool = False) -> str:
+    """herbier 记忆藏页 目录 browse catalogue memory。【小家 Herbier 专用，只读】按时间返回 Ombre 的真实记忆正文、审核状态和来源署名；不会触发 recall 计数，也不会复制或修改记忆。limit 默认 400，范围 20~800。"""
+    try:
+        limit = max(20, min(int(limit or 400), 800))
+        stored = await bucket_mgr.list_all(include_archive=include_archive)
+        visible = [
+            bucket for bucket in stored
+            if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") != "rejected"
+        ]
+        visible.sort(
+            key=lambda bucket: str(
+                bucket.get("metadata", {}).get("created")
+                or bucket.get("metadata", {}).get("last_active")
+                or ""
+            ),
+            reverse=True,
+        )
+        pages = []
+        for bucket in visible[:limit]:
+            meta = bucket.get("metadata", {})
+            pages.append({
+                "id": bucket["id"],
+                "name": meta.get("name", bucket["id"]),
+                "content": strip_wikilinks(bucket.get("content", "")),
+                "type": meta.get("type", "dynamic"),
+                "domain": meta.get("domain", []),
+                "tags": meta.get("tags", []),
+                "importance": meta.get("importance", 5),
+                "pinned": bool(meta.get("pinned") or meta.get("protected")),
+                "resolved": bool(meta.get("resolved", False)),
+                "created": meta.get("created", ""),
+                "last_active": meta.get("last_active", ""),
+                "memory_status": meta.get("memory_status", "confirmed"),
+                "confidence": meta.get("confidence"),
+                "memory_scope": meta.get("memory_scope", "home_shared"),
+                "signed_by": meta.get("signed_by", []),
+                "evidence_speakers": meta.get("evidence_speakers", []),
+                "participants": meta.get("participants", []),
+                "curated_by": meta.get("curated_by", ""),
+                "source_surface": meta.get("source_surface", ""),
+                "source_kind": meta.get("source_kind", "legacy"),
+                "source_session_id": meta.get("source_session_id", ""),
+                "source_message_ids": meta.get("source_message_ids", []),
+                "evidence_quotes": meta.get("evidence_quotes", []),
+                "source_fingerprint": meta.get("source_fingerprint", ""),
+                "valid_from": meta.get("valid_from", ""),
+                "valid_to": meta.get("valid_to", ""),
+                "operation": meta.get("operation", "add"),
+                "supersedes": meta.get("supersedes", ""),
+                "rationale": meta.get("rationale", ""),
+            })
+        return _json_lib.dumps({
+            "source": "ombre_brain",
+            "scope": "home_shared",
+            "total": len(visible),
+            "pages": pages,
+        }, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        logger.exception("Herbier catalogue export failed")
+        return _json_lib.dumps({
+            "source": "ombre_brain",
+            "scope": "home_shared",
+            "error": str(exc),
+            "total": 0,
+            "pages": [],
+        }, ensure_ascii=False)
 
 
 # =============================================================

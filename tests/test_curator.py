@@ -19,6 +19,35 @@ def test_revision_is_always_a_candidate_and_evidence_is_scoped():
     assert memory["evidence_message_ids"] == ["u1"]
 
 
+def test_shared_home_provenance_is_normalized_without_splitting_access():
+    payload = normalize_curate_payload({
+        "session_id": "shared-room",
+        "source_message_ids": ["u1", "a1"],
+        "memories": [{
+            "title": "共同记住的约定",
+            "content": "Claire 和 Calder 约好周末一起整理照片。",
+            "status": "confirmed",
+            "confidence": 0.98,
+            "evidence_message_ids": ["u1", "a1"],
+            "evidence_quotes": [
+                {"message_id": "u1", "quote": "周末一起整理照片。"},
+                {"message_id": "invented", "quote": "不该被收下。"},
+            ],
+            "signed_by": ["Calder", "Calder"],
+            "evidence_speakers": ["Claire", "Calder"],
+            "participants": ["Claire", "Calder"],
+            "curated_by": "sonnet_secretary",
+            "source_surface": "kelo_home",
+        }],
+    })
+    memory = payload["memories"][0]
+    assert memory["memory_scope"] == "home_shared"
+    assert memory["signed_by"] == ["Calder"]
+    assert memory["evidence_speakers"] == ["Claire", "Calder"]
+    assert memory["participants"] == ["Claire", "Calder"]
+    assert memory["evidence_quotes"] == [{"message_id": "u1", "quote": "周末一起整理照片。"}]
+
+
 def test_fingerprint_is_stable_for_retries():
     item = {
         "operation": "add",

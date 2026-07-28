@@ -20,6 +20,7 @@ EXPECTED_TOOL_ALIASES = {
     "somatic_digest": ("情绪消化", "digest", "emotion"),
     "somatic_integrate": ("情绪余波合并", "integrate", "emotion"),
     "constellation": ("记忆星图", "graph", "memory"),
+    "herbier": ("记忆藏页", "catalogue", "memory"),
     "pulse": ("系统状态", "status", "memories"),
     "dream": ("做梦", "reflect", "memory"),
 }

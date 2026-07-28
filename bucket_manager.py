@@ -158,13 +158,23 @@ class BucketManager:
             "source_kind", "source_session_id", "source_message_ids", "source_fingerprint",
             "memory_status", "confidence", "valid_from", "valid_to", "supersedes",
             "superseded_by", "operation", "rationale", "reviewed_at", "review_decision",
-            "batch_id",
+            "batch_id", "memory_scope", "signed_by", "evidence_speakers", "participants",
+            "curated_by", "source_surface", "evidence_quotes",
         }
         for key, value in (extra_metadata or {}).items():
             if key not in allowed_extra or value is None:
                 continue
-            if key == "source_message_ids":
+            if key in {"source_message_ids", "signed_by", "evidence_speakers", "participants"}:
                 metadata[key] = [str(item)[:100] for item in (value or []) if str(item).strip()][:12]
+            elif key == "evidence_quotes":
+                metadata[key] = [
+                    {
+                        "message_id": str(item.get("message_id") or "")[:100],
+                        "quote": str(item.get("quote") or "")[:320],
+                    }
+                    for item in (value or [])
+                    if isinstance(item, dict) and item.get("message_id") and item.get("quote")
+                ][:12]
             elif key == "confidence":
                 metadata[key] = max(0.0, min(1.0, float(value)))
             elif isinstance(value, (str, int, float, bool)):
@@ -304,6 +314,12 @@ class BucketManager:
                 post[key] = str(kwargs[key])[:180]
         if "confidence" in kwargs:
             post["confidence"] = max(0.0, min(1.0, float(kwargs["confidence"])))
+        for key in ("signed_by", "evidence_speakers", "participants", "source_message_ids"):
+            if key in kwargs:
+                post[key] = [str(item)[:100] for item in (kwargs[key] or []) if str(item).strip()][:12]
+        for key in ("memory_scope", "curated_by", "source_surface", "source_session_id", "source_kind"):
+            if key in kwargs:
+                post[key] = str(kwargs[key])[:180]
 
         # --- Auto-refresh activation time / 自动刷新激活时间 ---
         post["last_active"] = now_iso()
