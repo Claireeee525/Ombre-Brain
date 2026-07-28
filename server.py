@@ -68,7 +68,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.4.1"
+OMBRE_VERSION = "1.4.2"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -635,6 +635,58 @@ def _agent_stance_recall_line(meta: dict) -> str:
     return f"\n[页边表态: {'；'.join(parts)}]" if parts else ""
 
 
+async def _breath_packet_item(bucket: dict, match_kind: str = "direct") -> dict:
+    meta = bucket.get("metadata") or {}
+    content = strip_wikilinks(str(bucket.get("content") or "")).strip()
+    title = str(meta.get("name") or "").strip()
+    if not title:
+        title = re.sub(r"\s+", " ", content).strip()[:60] or "未命名记忆"
+    if match_kind == "related":
+        clean_meta = {key: value for key, value in meta.items() if key != "tags"}
+        summary = await dehydrator.dehydrate(content, clean_meta)
+        render_kind = "summary"
+        why_recalled = "语义关联"
+    else:
+        summary = content[:1200]
+        render_kind = "original" if len(content) <= 1200 else "window"
+        why_recalled = "关键词直接命中"
+    speakers = meta.get("evidence_speakers") or []
+    if isinstance(speakers, str):
+        speakers = [speakers]
+    signed_by = meta.get("signed_by") or []
+    if isinstance(signed_by, str):
+        signed_by = [signed_by]
+    source_actor = "、".join(str(item).strip() for item in speakers if str(item).strip())
+    if not source_actor:
+        source_actor = "、".join(str(item).strip() for item in signed_by if str(item).strip())
+    recorded_by = str(meta.get("curated_by") or "").strip()
+    if not recorded_by:
+        recorded_by = "、".join(str(item).strip() for item in signed_by if str(item).strip())
+    message_ids = meta.get("source_message_ids") or []
+    if isinstance(message_ids, str):
+        message_ids = [message_ids]
+    conversation_id = str(meta.get("source_session_id") or "").strip()
+    if message_ids:
+        source_ref = f"message:{str(message_ids[0]).strip()}"
+    elif conversation_id:
+        source_ref = f"conversation:{conversation_id}"
+    else:
+        source_ref = str(meta.get("source_fingerprint") or "").strip()
+    return {
+        "bucket_id": str(bucket.get("id") or ""),
+        "title": title,
+        "summary": summary,
+        "source_actor": source_actor,
+        "recorded_by": recorded_by,
+        "source_ref": source_ref,
+        "conversation_id": conversation_id,
+        "event_date": str(meta.get("valid_from") or meta.get("created") or ""),
+        "match_kind": match_kind,
+        "render_kind": render_kind,
+        "why_recalled": why_recalled,
+    }
+
+
 @mcp.tool()
 async def breath(
     query: str = "",
@@ -645,8 +697,9 @@ async def breath(
     max_results: int = 20,
     importance_min: int = -1,
     include_candidates: bool = False,
+    response_format: str = "text",
 ) -> str:
-    """breath 记忆检索 浮现 recall memory。【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """breath 记忆检索 浮现 recall memory。【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。response_format可选text或packet；packet只用于有query的结构化召回，包含bucket_id、来源、日期与命中类型。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -864,6 +917,23 @@ async def breath(
                     matched_ids.add(bucket_id)
     except Exception as e:
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
+
+    if str(response_format or "text").strip().lower() == "packet":
+        packet_items = []
+        for bucket in matches[:max_results]:
+            try:
+                match_kind = "related" if bucket.get("vector_match") else "direct"
+                packet_items.append(await _breath_packet_item(bucket, match_kind))
+                await bucket_mgr.touch(bucket["id"])
+            except Exception as e:
+                logger.warning(f"Failed to build recall packet item / 召回包拼装失败: {e}")
+        payload = {
+            "source": "ombre_brain",
+            "query": query,
+            "items": packet_items,
+        }
+        await _fire_webhook("breath", {"mode": "packet", "matches": len(packet_items)})
+        return _json_lib.dumps(payload, ensure_ascii=False)
 
     # --- 记忆家族优先：同族命中≥3 且有摘要时，用"家族摘要+最相关2条原文"替代一堆碎片 ---
     results = []

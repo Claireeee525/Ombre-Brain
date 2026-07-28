@@ -41,6 +41,8 @@ async def test_every_official_tool_description_starts_with_its_name_and_aliases(
     assert "offset" in herbier_schema["properties"]
     assert herbier_schema["properties"]["offset"]["default"] == 0
     assert herbier_schema["properties"]["limit"]["default"] == 100
+    breath_schema = tools["breath"].inputSchema
+    assert breath_schema["properties"]["response_format"]["default"] == "text"
 
 
 @pytest.mark.asyncio
@@ -64,6 +66,44 @@ def test_herbier_full_catalogue_lenses_use_bucket_metadata():
     assert server._herbier_memory_kind({"metadata": {"domain": ["梦境"]}}) == "dream"
     assert server._herbier_memory_kind({"metadata": {"tags": ["身体状态"]}}) == "state"
     assert server._herbier_memory_kind({"metadata": {"domain": ["回忆"]}}) == "event"
+
+
+@pytest.mark.asyncio
+async def test_breath_packet_preserves_provenance_and_render_rules(monkeypatch):
+    monkeypatch.setattr(server.dehydrator, "dehydrate", lambda content, meta: _async_value("相关记忆摘要"))
+    bucket = {
+        "id": "bucket-1",
+        "content": "Claire 当时说过的原话。",
+        "metadata": {
+            "name": "那次谈话",
+            "evidence_speakers": ["Claire"],
+            "signed_by": ["珂洛"],
+            "curated_by": "Calder",
+            "source_session_id": "session-1",
+            "source_message_ids": ["message-1"],
+            "valid_from": "2026-07-27T12:00:00+08:00",
+        },
+    }
+
+    direct = await server._breath_packet_item(bucket, "direct")
+    related = await server._breath_packet_item(bucket, "related")
+
+    assert direct == {
+        "bucket_id": "bucket-1",
+        "title": "那次谈话",
+        "summary": "Claire 当时说过的原话。",
+        "source_actor": "Claire",
+        "recorded_by": "Calder",
+        "source_ref": "message:message-1",
+        "conversation_id": "session-1",
+        "event_date": "2026-07-27T12:00:00+08:00",
+        "match_kind": "direct",
+        "render_kind": "original",
+        "why_recalled": "关键词直接命中",
+    }
+    assert related["summary"] == "相关记忆摘要"
+    assert related["render_kind"] == "summary"
+    assert related["match_kind"] == "related"
 
 
 async def _async_value(value):
