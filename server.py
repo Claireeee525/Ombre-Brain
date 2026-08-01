@@ -70,7 +70,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.5.3"
+OMBRE_VERSION = "1.5.4"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -2650,6 +2650,73 @@ async def dupes(include_archive: bool = True, limit: int = 100) -> str:
             "duplicate_content_groups": [],
             "same_name_review_groups": [],
         }, ensure_ascii=False)
+
+
+@mcp.custom_route("/api/inventory", methods=["GET"])
+async def api_inventory(request):
+    """Authenticated JSON endpoint for the read-only inventory dashboard."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    include_archive = request.query_params.get("archive", "1") != "0"
+    include_records = request.query_params.get("records", "0") == "1"
+    try:
+        report = build_inventory(config["buckets_dir"], include_archive=include_archive)
+        if not include_records:
+            for key in (
+                "records",
+                "raw_transcript_records",
+                "source_unknown_records",
+                "low_confidence_records",
+                "protected_records",
+            ):
+                report[key] = [item.get("id") for item in report[key] if item.get("id")]
+        return JSONResponse(report)
+    except Exception as exc:
+        logger.exception("Inventory API export failed")
+        return JSONResponse({"read_only": True, "error": str(exc)}, status_code=500)
+
+
+@mcp.custom_route("/api/dupes", methods=["GET"])
+async def api_dupes(request):
+    """Authenticated JSON endpoint for duplicate review groups."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    include_archive = request.query_params.get("archive", "1") != "0"
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "100") or "100"), 500))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid limit"}, status_code=400)
+    try:
+        report = build_inventory(config["buckets_dir"], include_archive=include_archive)
+        records_by_id = {record["id"]: record for record in report.get("records", [])}
+
+        def with_records(groups):
+            return [
+                {
+                    **group,
+                    "records": [
+                        records_by_id[item_id]
+                        for item_id in group.get("ids", [])
+                        if item_id in records_by_id
+                    ],
+                }
+                for group in groups[:limit]
+            ]
+
+        return JSONResponse({
+            "schema_version": report.get("schema_version", 1),
+            "read_only": True,
+            "duplicate_content_groups": with_records(report.get("duplicate_content_groups", [])),
+            "same_name_review_groups": with_records(report.get("same_name_review_groups", [])),
+            "review_policy": report.get("review_policy", {}),
+        })
+    except Exception as exc:
+        logger.exception("Duplicate review API export failed")
+        return JSONResponse({"read_only": True, "error": str(exc)}, status_code=500)
 
 
 # =============================================================

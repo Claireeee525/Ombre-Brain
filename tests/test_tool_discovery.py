@@ -76,6 +76,45 @@ async def test_inventory_is_read_only_and_can_return_id_only_review_payload(monk
 
 
 @pytest.mark.asyncio
+async def test_inventory_http_routes_are_authenticated_and_read_only(monkeypatch):
+    from starlette.datastructures import QueryParams
+
+    class Request:
+        query_params = QueryParams("records=0&archive=0")
+        cookies = {}
+        headers = {}
+
+    monkeypatch.setattr(server, "_require_auth", lambda request: None)
+    monkeypatch.setattr(
+        server,
+        "build_inventory",
+        lambda buckets_dir, include_archive=True: {
+            "read_only": True,
+            "records": [{"id": "a1"}],
+            "raw_transcript_records": [],
+            "source_unknown_records": [],
+            "low_confidence_records": [],
+            "protected_records": [],
+            "duplicate_content_groups": [],
+            "same_name_review_groups": [],
+            "review_policy": {"physical_delete_performed": False},
+        },
+    )
+
+    inventory_response = await server.api_inventory(Request())
+    assert inventory_response.status_code == 200
+    assert json.loads(inventory_response.body)["records"] == ["a1"]
+
+    dupes_request = Request()
+    dupes_request.query_params = QueryParams("limit=2")
+    dupes_response = await server.api_dupes(dupes_request)
+    payload = json.loads(dupes_response.body)
+    assert dupes_response.status_code == 200
+    assert payload["read_only"] is True
+    assert payload["review_policy"]["physical_delete_performed"] is False
+
+
+@pytest.mark.asyncio
 async def test_public_health_exposes_the_deployed_version(monkeypatch):
     monkeypatch.setattr(
         server.bucket_mgr,
