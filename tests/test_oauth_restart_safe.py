@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import json
+import time
 from urllib.parse import parse_qs, urlparse
 
 from pydantic import AnyHttpUrl
@@ -131,6 +133,8 @@ def test_oauth_flow_tokens_and_client_survive_server_restart(tmp_path):
         assert login_url.startswith(f"{BASE_URL}/oauth/login?")
         login_state = parse_qs(urlparse(login_url).query)["state"][0]
         assert login_state != "state-123"
+        pending = next(iter(json.loads(store_path.read_text())["pending_authorizations"].values()))
+        assert pending["expires_at"] - time.time() > 29 * 60
 
         login_page = client.get(login_url)
         assert login_page.status_code == 200
@@ -146,6 +150,17 @@ def test_oauth_flow_tokens_and_client_survive_server_restart(tmp_path):
         callback_query = parse_qs(urlparse(callback.headers["location"]).query)
         code = callback_query["code"][0]
         assert callback_query["state"] == ["state-123"]
+
+        duplicate_callback = client.post(
+            "/oauth/callback",
+            data={"state": login_state, "password": "owner-password"},
+            follow_redirects=False,
+        )
+        assert duplicate_callback.status_code == 302
+        duplicate_query = parse_qs(urlparse(duplicate_callback.headers["location"]).query)
+        assert duplicate_query["state"] == ["state-123"]
+        assert duplicate_query["code"][0] != code
+        code = duplicate_query["code"][0]
 
         token_response = client.post(
             "/token",
@@ -199,3 +214,54 @@ def test_private_home_service_token_still_works_with_oauth(tmp_path):
     ) as client:
         assert _initialize(client, "home-secret").status_code == 200
         assert _initialize(client, "wrong-secret").status_code == 401
+
+
+def test_login_and_callback_reload_state_written_by_another_provider(tmp_path):
+    store_path = tmp_path / "oauth.json"
+    verifier = "x" * 64
+    app_that_authorizes = _build_app(store_path)
+    # Construct this provider before the first provider writes anything. This
+    # reproduces a callback landing on a different worker with a stale cache.
+    app_that_receives_callback = _build_app(store_path)
+
+    with (
+        TestClient(app_that_authorizes, base_url=BASE_URL) as authorizer,
+        TestClient(app_that_receives_callback, base_url=BASE_URL) as callback_worker,
+    ):
+        registered = authorizer.post(
+            "/register",
+            json={
+                "redirect_uris": ["https://claude.example/callback"],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "scope": SCOPE,
+                "client_name": "Official connector across workers",
+            },
+        )
+        client_id = registered.json()["client_id"]
+        authorized = authorizer.get(
+            "/authorize",
+            params={
+                "client_id": client_id,
+                "redirect_uri": "https://claude.example/callback",
+                "response_type": "code",
+                "code_challenge": _pkce_challenge(verifier),
+                "code_challenge_method": "S256",
+                "state": "cross-worker-state",
+                "scope": SCOPE,
+                "resource": RESOURCE_URL,
+            },
+            follow_redirects=False,
+        )
+        login_url = authorized.headers["location"]
+        login_state = parse_qs(urlparse(login_url).query)["state"][0]
+
+        assert callback_worker.get(login_url).status_code == 200
+        callback = callback_worker.post(
+            "/oauth/callback",
+            data={"state": login_state, "password": "owner-password"},
+            follow_redirects=False,
+        )
+        assert callback.status_code == 302
+        assert parse_qs(urlparse(callback.headers["location"]).query)["state"] == ["cross-worker-state"]

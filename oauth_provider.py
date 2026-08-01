@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import secrets
 import time
@@ -38,6 +39,9 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 
+logger = logging.getLogger("ombre_brain.oauth")
+
+
 def _secret_key(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -61,6 +65,7 @@ class OmbreOAuthProvider(
         service_token: str = "",
         scope: str = "ombre:memory",
         owner_name: str = "Claire",
+        pending_ttl_seconds: int = 30 * 60,
     ) -> None:
         self.store_path = Path(store_path)
         self.issuer_url = issuer_url.rstrip("/")
@@ -69,6 +74,7 @@ class OmbreOAuthProvider(
         self.service_token = str(service_token or "")
         self.scope = scope
         self.owner_name = owner_name
+        self.pending_ttl_seconds = max(10 * 60, int(pending_ttl_seconds))
         self._lock = asyncio.Lock()
         self._failed_logins: dict[str, deque[float]] = defaultdict(deque)
         self._store = self._read_store()
@@ -101,6 +107,10 @@ class OmbreOAuthProvider(
                 clean[key] = parsed[key]
         return clean
 
+    def _reload_store(self) -> None:
+        """Reload durable state so callbacks can land on another worker safely."""
+        self._store = self._read_store()
+
     def _prune(self) -> None:
         now = time.time()
         for collection in ("authorization_codes", "access_tokens", "refresh_tokens"):
@@ -130,6 +140,7 @@ class OmbreOAuthProvider(
         os.replace(temp_path, self.store_path)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        self._reload_store()
         record = self._store["clients"].get(str(client_id or ""))
         return OAuthClientInformationFull.model_validate(record) if record else None
 
@@ -137,6 +148,7 @@ class OmbreOAuthProvider(
         if not client_info.client_id:
             raise ValueError("No client_id provided")
         async with self._lock:
+            self._reload_store()
             self._store["clients"][client_info.client_id] = client_info.model_dump(mode="json")
             self._audit("client_registered", client_id=client_info.client_id, client_name=client_info.client_name or "")
             self._write_store()
@@ -158,17 +170,20 @@ class OmbreOAuthProvider(
             "scopes": params.scopes or [self.scope],
             "resource": params.resource or self.resource_url,
             "oauth_state": params.state,
-            "expires_at": time.time() + 600,
+            "expires_at": time.time() + self.pending_ttl_seconds,
         }
         async with self._lock:
+            self._reload_store()
             self._store["pending_authorizations"][_secret_key(login_state)] = pending
             self._write_store()
         return f"{self.issuer_url}/oauth/login?{urlencode({'state': login_state})}"
 
     async def login_page(self, request: Request) -> Response:
         state = str(request.query_params.get("state") or "")
+        self._reload_store()
         pending = self._store["pending_authorizations"].get(_secret_key(state))
         if not state or not pending or pending.get("expires_at", 0) < time.time():
+            logger.warning("OAuth login state missing or expired (pending=%d)", len(self._store["pending_authorizations"]))
             return HTMLResponse("<h1>这次连接请求已失效，请回到官端重试。</h1>", status_code=400)
         client_name = html.escape(str(pending.get("client_name") or "Claude"))
         state_value = html.escape(state, quote=True)
@@ -206,13 +221,17 @@ small{{display:block;margin-top:16px;color:#8093a5}}
         if not isinstance(state, str) or not isinstance(password, str):
             return HTMLResponse("<h1>连接请求不完整。</h1>", status_code=400)
         pending_key = _secret_key(state)
+        self._reload_store()
         pending = self._store["pending_authorizations"].get(pending_key)
         if not pending or pending.get("expires_at", 0) < time.time():
+            logger.warning("OAuth callback state missing or expired (pending=%d)", len(self._store["pending_authorizations"]))
             return HTMLResponse("<h1>这次连接请求已失效，请回到官端重试。</h1>", status_code=400)
         if not self.verify_owner_password(password):
             self._failed_logins[address].append(time.time())
-            self._audit("login_failed", client_id=pending.get("client_id", ""), address_hash=_secret_key(address)[:12])
-            self._write_store()
+            async with self._lock:
+                self._reload_store()
+                self._audit("login_failed", client_id=pending.get("client_id", ""), address_hash=_secret_key(address)[:12])
+                self._write_store()
             return HTMLResponse("<h1>密码不对，请返回重试。</h1>", status_code=401)
 
         raw_code = secrets.token_urlsafe(32)
@@ -228,8 +247,17 @@ small{{display:block;margin-top:16px;color:#8093a5}}
             subject=self.owner_name,
         )
         async with self._lock:
+            self._reload_store()
+            durable_pending = self._store["pending_authorizations"].get(pending_key)
+            if not durable_pending or durable_pending.get("expires_at", 0) < time.time():
+                logger.warning("OAuth callback state disappeared before commit")
+                return HTMLResponse("<h1>这次连接请求已失效，请回到官端重试。</h1>", status_code=400)
             self._store["authorization_codes"][_secret_key(raw_code)] = code.model_dump(mode="json", exclude={"code"})
-            self._store["pending_authorizations"].pop(pending_key, None)
+            # Keep the password-page state for its short TTL. Browsers and
+            # official clients sometimes submit the form twice; issuing a new
+            # one-time code is safer than showing a false "expired" page.
+            durable_pending["successful_callbacks"] = int(durable_pending.get("successful_callbacks", 0)) + 1
+            durable_pending["last_callback_at"] = int(time.time())
             self._audit("owner_authorized", client_id=code.client_id)
             self._write_store()
         redirect = construct_redirect_uri(str(code.redirect_uri), code=raw_code, state=pending.get("oauth_state"))
@@ -238,6 +266,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> AuthorizationCode | None:
+        self._reload_store()
         record = self._store["authorization_codes"].get(_secret_key(authorization_code))
         if not record or record.get("client_id") != client.client_id:
             return None
@@ -279,6 +308,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
     ) -> OAuthToken:
         key = _secret_key(authorization_code.code)
         async with self._lock:
+            self._reload_store()
             if key not in self._store["authorization_codes"]:
                 raise TokenError(error="invalid_grant", error_description="Authorization code was already used")
             self._store["authorization_codes"].pop(key, None)
@@ -295,6 +325,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
     ) -> OmbreRefreshToken | None:
+        self._reload_store()
         record = self._store["refresh_tokens"].get(_secret_key(refresh_token))
         if not record or record.get("client_id") != client.client_id:
             return None
@@ -307,6 +338,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
             raise TokenError(error="invalid_scope", error_description="Requested scope was not originally granted")
         key = _secret_key(refresh_token.token)
         async with self._lock:
+            self._reload_store()
             if key not in self._store["refresh_tokens"]:
                 raise TokenError(error="invalid_grant", error_description="Refresh token was already used")
             self._store["refresh_tokens"].pop(key, None)
@@ -330,6 +362,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
                 subject="kelo-home",
                 claims={"iss": "ombre-service-token"},
             )
+        self._reload_store()
         record = self._store["access_tokens"].get(_secret_key(token))
         if not record or (record.get("expires_at") and record["expires_at"] < time.time()):
             return None
@@ -340,6 +373,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
         if not raw or (self.service_token and hmac.compare_digest(raw, self.service_token)):
             return
         async with self._lock:
+            self._reload_store()
             self._store["access_tokens"].pop(_secret_key(raw), None)
             self._store["refresh_tokens"].pop(_secret_key(raw), None)
             self._audit("token_revoked", client_id=getattr(token, "client_id", ""))

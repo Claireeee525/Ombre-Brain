@@ -443,7 +443,7 @@ Sensitive config via env vars:
 - `OMBRE_PUBLIC_URL` — OAuth 与 MCP 资源使用的公网 HTTPS 根地址
 - `OMBRE_MCP_REQUIRE_AUTH` — 旧式静态 Bearer 回退；OAuth 开启时忽略
 
-OAuth 开启后，官端通过 RFC 9728 发现、动态客户端注册、Authorization Code + PKCE 登录；小家仍可用 `OMBRE_MCP_TOKEN` 走独立的服务凭据。OAuth 状态保存在记忆卷的 `.oauth_state.json`，重启不会让已连接的官端在第二天失效。
+OAuth 开启后，官端通过 RFC 9728 发现、动态客户端注册、Authorization Code + PKCE 登录；小家仍可用 `OMBRE_MCP_TOKEN` 走独立的服务凭据。OAuth 状态保存在记忆卷的 `.oauth_state.json`，重启不会让已连接的官端在第二天失效。登录确认页保留 30 分钟，且回调会从持久卷刷新 state 并容忍重复提交。
 
 ## Dashboard 认证 / Dashboard Auth
 

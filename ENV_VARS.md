@@ -28,6 +28,7 @@
 - 若启用小家里的「珂洛此刻」，请在 Ombre 与小家两个 Zeabur 服务中设置同一个高强度随机 `OMBRE_HOME_READ_TOKEN`。token 只放环境变量和 `Authorization: Bearer` 请求头，不放 URL、仓库或日志。
 - 小家会在服务端请求头中携带 `OMBRE_MCP_TOKEN`，浏览器端看不到。开启 OAuth 后，同一个 token 作为小家专用服务凭据继续有效；官端走动态注册、PKCE、访问令牌和刷新令牌。
 - OAuth 的客户端注册、授权码、访问令牌和刷新令牌写在 `{buckets_dir}/.oauth_state.json`，文件权限为 `0600`，因此容器重启不会丢失官端登录。访问令牌 1 小时、刷新令牌 30 天，并在刷新时轮换。
+- 登录确认页保留 30 分钟；回调会重新读取持久卷并容忍浏览器重复提交，避免请求落到不同 worker 或按钮重复提交时误报“连接请求已失效”。
 - 官端授权页复用 Dashboard 密码校验；密码不会写进 OAuth 状态文件，也不会交给官端。连续输错 5 次会暂缓 10 分钟。
 
 ## Webhook 推送格式 (`OMBRE_HOOK_URL`)
