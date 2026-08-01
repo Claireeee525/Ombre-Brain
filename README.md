@@ -439,7 +439,11 @@ Sensitive config via env vars:
 - `OMBRE_BUCKETS_DIR` — 覆盖存储路径
 - `OMBRE_DASHBOARD_PASSWORD` — Dashboard 访问密码（可选，见下）
 - `OMBRE_MCP_TOKEN` — 远程 MCP Bearer token（留空时复用 `OMBRE_HOME_READ_TOKEN`）
-- `OMBRE_MCP_REQUIRE_AUTH` — 是否强制静态 Bearer 鉴权（默认关闭；Claude 官端应使用 OAuth）
+- `OMBRE_OAUTH_ENABLED` — 为远程 MCP 启用标准 OAuth 2.1（公网生产建议开启）
+- `OMBRE_PUBLIC_URL` — OAuth 与 MCP 资源使用的公网 HTTPS 根地址
+- `OMBRE_MCP_REQUIRE_AUTH` — 旧式静态 Bearer 回退；OAuth 开启时忽略
+
+OAuth 开启后，官端通过 RFC 9728 发现、动态客户端注册、Authorization Code + PKCE 登录；小家仍可用 `OMBRE_MCP_TOKEN` 走独立的服务凭据。OAuth 状态保存在记忆卷的 `.oauth_state.json`，重启不会让已连接的官端在第二天失效。
 
 ## Dashboard 认证 / Dashboard Auth
 

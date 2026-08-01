@@ -32,10 +32,19 @@ async def test_confirmed_memory_can_be_rejected_without_deleting_evidence(monkey
     manager = FakeBucketManager("confirmed")
     monkeypatch.setattr(server, "bucket_mgr", manager)
 
-    result = json.loads(await server.memory_review("memory-1", "reject"))
+    result = json.loads(await server.memory_review(
+        "memory-1",
+        "reject",
+        actor="Claire via Kelo Home",
+        reason="user_deleted_in_home",
+        request_id="audit-123",
+    ))
 
     assert result["ok"] is True
     assert result["memory_status"] == "rejected"
+    assert result["reviewed_by"] == "Claire via Kelo Home"
+    assert result["review_reason"] == "user_deleted_in_home"
+    assert result["review_request_id"] == "audit-123"
     assert manager.bucket["content"] == "保留原文证据。"
     assert manager.bucket["metadata"]["status_before_reject"] == "confirmed"
     assert manager.bucket["metadata"]["resolved"] is True

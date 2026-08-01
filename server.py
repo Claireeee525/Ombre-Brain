@@ -64,11 +64,12 @@ from curator import (
     normalize_curate_payload,
 )
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
+from oauth_provider import OmbreOAuthProvider, install_oauth_login_routes
 import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.4.5"
+OMBRE_VERSION = "1.5.0"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -109,11 +110,12 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-# Claude's official remote connector supports public MCP or standard OAuth, but
-# cannot attach this service's ad-hoc static bearer header.  Keep static bearer
-# protection opt-in until the OAuth phase is implemented; otherwise merely
-# defining the private Kelo token would silently lock the official client out.
+# Legacy escape hatch only.  Standard OAuth is configured separately below;
+# the private Kelo service token is accepted by the same OAuth token verifier.
 OMBRE_MCP_REQUIRE_AUTH = _env_flag("OMBRE_MCP_REQUIRE_AUTH", False)
+OMBRE_OAUTH_ENABLED = _env_flag("OMBRE_OAUTH_ENABLED", False)
+OMBRE_PUBLIC_URL = os.environ.get("OMBRE_PUBLIC_URL", "https://kelo-brain.zeabur.app").strip().rstrip("/")
+OMBRE_MCP_RESOURCE_URL = f"{OMBRE_PUBLIC_URL}/mcp"
 
 
 class McpBearerAuthMiddleware:
@@ -254,21 +256,6 @@ family_engine.init(config, bucket_loader=bucket_mgr.get, dehydrator=dehydrator)
 embedding_engine.on_stored = family_engine.on_stored
 embedding_engine.on_deleted = family_engine.on_deleted
 
-# --- Create MCP server instance / 创建 MCP 服务器实例 ---
-# host="0.0.0.0" so Docker container's SSE is externally reachable
-# stdio mode ignores host (no network)
-mcp = FastMCP(
-    "Ombre Brain",
-    host="0.0.0.0",
-    port=OMBRE_PORT,
-    # Zeabur restarts replace the process and erase stateful MCP session IDs.
-    # Stateless HTTP lets official clients continue after a restart instead of
-    # presenting yesterday's now-unknown mcp-session-id forever.
-    stateless_http=True,
-    json_response=True,
-)
-
-
 # =============================================================
 # Dashboard Auth — simple cookie-based session auth
 # Dashboard 认证 —— 基于 Cookie 的会话认证
@@ -381,6 +368,56 @@ def _require_home_read_auth(request):
     )
 
 
+# --- Create MCP server instance / 创建 MCP 服务器实例 ---
+# OAuth is opt-in at deploy time so local stdio/test users are not unexpectedly
+# locked out.  Production enables OMBRE_OAUTH_ENABLED after a dashboard password
+# exists.  SDK auth protects only MCP transports; dashboard routes retain their
+# existing cookie/password checks.
+_oauth_provider = None
+_mcp_auth_kwargs = {}
+if OMBRE_OAUTH_ENABLED:
+    if _is_setup_needed():
+        raise RuntimeError("OMBRE_OAUTH_ENABLED requires an Ombre dashboard password")
+    from pydantic import AnyHttpUrl
+    from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
+
+    _oauth_provider = OmbreOAuthProvider(
+        store_path=os.path.join(config["buckets_dir"], ".oauth_state.json"),
+        issuer_url=OMBRE_PUBLIC_URL,
+        resource_url=OMBRE_MCP_RESOURCE_URL,
+        verify_owner_password=_verify_any_password,
+        service_token=OMBRE_MCP_TOKEN,
+    )
+    _mcp_auth_kwargs = {
+        "auth_server_provider": _oauth_provider,
+        "auth": AuthSettings(
+            issuer_url=AnyHttpUrl(OMBRE_PUBLIC_URL),
+            resource_server_url=AnyHttpUrl(OMBRE_MCP_RESOURCE_URL),
+            client_registration_options=ClientRegistrationOptions(
+                enabled=True,
+                valid_scopes=["ombre:memory"],
+                default_scopes=["ombre:memory"],
+            ),
+            revocation_options=RevocationOptions(enabled=True),
+            required_scopes=["ombre:memory"],
+        ),
+    }
+
+mcp = FastMCP(
+    "Ombre Brain",
+    host="0.0.0.0",
+    port=OMBRE_PORT,
+    # Zeabur restarts replace the process and erase stateful MCP session IDs.
+    # Stateless HTTP lets official clients continue after a restart instead of
+    # presenting yesterday's now-unknown mcp-session-id forever.
+    stateless_http=True,
+    json_response=True,
+    **_mcp_auth_kwargs,
+)
+if _oauth_provider:
+    install_oauth_login_routes(mcp, _oauth_provider)
+
+
 # --- Auth endpoints ---
 @mcp.custom_route("/auth/status", methods=["GET"])
 async def auth_status(request):
@@ -490,7 +527,8 @@ async def health_check(request):
             "version": OMBRE_VERSION,
             "buckets": stats["permanent_count"] + stats["dynamic_count"],
             "decay_engine": "running" if decay_engine.is_running else "stopped",
-            "mcp_auth": "required" if OMBRE_MCP_REQUIRE_AUTH else "disabled",
+            "mcp_auth": "oauth" if OMBRE_OAUTH_ENABLED else ("static" if OMBRE_MCP_REQUIRE_AUTH else "disabled"),
+            "mcp_oauth_persistence": "volume" if OMBRE_OAUTH_ENABLED else "disabled",
             "mcp_transport": "stateless",
         })
     except Exception as e:
@@ -1396,7 +1434,13 @@ async def curate(payload: str) -> str:
 
 
 @mcp.tool()
-async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
+async def memory_review(
+    bucket_id: str,
+    decision: str = "confirm",
+    actor: str = "",
+    reason: str = "",
+    request_id: str = "",
+) -> str:
     """memory_review 记忆审核 同步移除 restore review memory。候选记忆审核可 confirm；candidate/confirmed 可 reject 或 supersede；restore 可恢复。所有移除只改变有效状态，保留原文证据。"""
     decision = str(decision or "confirm").strip().lower()
     if decision not in {"confirm", "reject", "supersede", "restore"}:
@@ -1440,6 +1484,9 @@ async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
         "memory_status": target_status,
         "reviewed_at": now,
         "review_decision": decision,
+        "reviewed_by": str(actor or "MCP client").strip()[:120],
+        "review_reason": str(reason or "").strip()[:240],
+        "review_request_id": str(request_id or "").strip()[:120],
     }
     if decision in {"reject", "supersede"}:
         updates["resolved"] = True
@@ -3571,7 +3618,7 @@ if __name__ == "__main__":
         else:
             _app = mcp.sse_app()
 
-        if OMBRE_MCP_REQUIRE_AUTH:
+        if OMBRE_MCP_REQUIRE_AUTH and not OMBRE_OAUTH_ENABLED:
             if not OMBRE_MCP_TOKEN:
                 raise RuntimeError(
                     "OMBRE_MCP_REQUIRE_AUTH is enabled but OMBRE_MCP_TOKEN/"
@@ -3579,6 +3626,8 @@ if __name__ == "__main__":
                 )
             _app.add_middleware(McpBearerAuthMiddleware, token=OMBRE_MCP_TOKEN)
             logger.info("Bearer authentication enabled for remote MCP routes")
+        elif OMBRE_OAUTH_ENABLED:
+            logger.info("OAuth 2.1 authentication enabled for remote MCP routes")
 
         # 把夜梦循环包进 app 的 lifespan（Starlette 新版没有 add_event_handler）
         import contextlib
