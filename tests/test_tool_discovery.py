@@ -41,6 +41,7 @@ async def test_every_official_tool_description_starts_with_its_name_and_aliases(
     assert "offset" in herbier_schema["properties"]
     assert herbier_schema["properties"]["offset"]["default"] == 0
     assert herbier_schema["properties"]["limit"]["default"] == 100
+    assert herbier_schema["properties"]["include_rejected"]["default"] is False
     breath_schema = tools["breath"].inputSchema
     assert breath_schema["properties"]["response_format"]["default"] == "text"
 
