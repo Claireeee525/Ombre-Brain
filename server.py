@@ -63,6 +63,7 @@ from curator import (
     memory_fingerprint,
     normalize_curate_payload,
 )
+from inventory import build_inventory
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 from oauth_provider import OmbreOAuthProvider, install_oauth_login_routes
 import somatic_state
@@ -2588,6 +2589,66 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
             "error": str(exc),
             "total": 0,
             "pages": [],
+        }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def inventory(include_archive: bool = True, include_records: bool = True) -> str:
+    """inventory 只读盘点 audit inventory report。扫描 Markdown 事实源和派生 SQLite 索引，输出来源、状态、原始聊天、重复审核组、来源不明记录与索引异常；不会修改、删除或自动合并任何记忆。"""
+    try:
+        report = build_inventory(config["buckets_dir"], include_archive=bool(include_archive))
+        if not include_records:
+            for key in (
+                "records",
+                "raw_transcript_records",
+                "source_unknown_records",
+                "low_confidence_records",
+                "protected_records",
+            ):
+                report[key] = [item.get("id") for item in report[key] if item.get("id")]
+        return _json_lib.dumps(report, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        logger.exception("Inventory export failed")
+        return _json_lib.dumps({
+            "schema_version": 1,
+            "read_only": True,
+            "error": str(exc),
+            "counts": {},
+        }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def dupes(include_archive: bool = True, limit: int = 100) -> str:
+    """dupes 重复审核组 duplicate review。只读返回内容哈希完全相同的明确重复组，以及同名但必须人工比较的疑似组；不会自动合并或删除。"""
+    try:
+        report = build_inventory(config["buckets_dir"], include_archive=bool(include_archive))
+        records_by_id = {record["id"]: record for record in report.get("records", [])}
+        limit = max(1, min(int(limit or 100), 500))
+
+        def with_records(groups):
+            output = []
+            for group in groups[:limit]:
+                output.append({
+                    **group,
+                    "records": [records_by_id[item_id] for item_id in group.get("ids", []) if item_id in records_by_id],
+                })
+            return output
+
+        return _json_lib.dumps({
+            "schema_version": report.get("schema_version", 1),
+            "read_only": True,
+            "duplicate_content_groups": with_records(report.get("duplicate_content_groups", [])),
+            "same_name_review_groups": with_records(report.get("same_name_review_groups", [])),
+            "review_policy": report.get("review_policy", {}),
+        }, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        logger.exception("Duplicate review export failed")
+        return _json_lib.dumps({
+            "schema_version": 1,
+            "read_only": True,
+            "error": str(exc),
+            "duplicate_content_groups": [],
+            "same_name_review_groups": [],
         }, ensure_ascii=False)
 
 

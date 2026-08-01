@@ -22,6 +22,8 @@ EXPECTED_TOOL_ALIASES = {
     "somatic_integrate": ("情绪余波合并", "integrate", "emotion"),
     "constellation": ("记忆星图", "graph", "memory"),
     "herbier": ("记忆藏页", "catalogue", "memory"),
+    "inventory": ("只读盘点", "audit", "inventory"),
+    "dupes": ("重复审核组", "duplicate", "review"),
     "pulse": ("系统状态", "status", "memories"),
     "dream": ("做梦", "reflect", "memory"),
 }
@@ -44,6 +46,33 @@ async def test_every_official_tool_description_starts_with_its_name_and_aliases(
     assert herbier_schema["properties"]["include_rejected"]["default"] is False
     breath_schema = tools["breath"].inputSchema
     assert breath_schema["properties"]["response_format"]["default"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_inventory_is_read_only_and_can_return_id_only_review_payload(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "build_inventory",
+        lambda buckets_dir, include_archive=True: {
+            "read_only": True,
+            "records": [{"id": "a1"}],
+            "raw_transcript_records": [{"id": "a1"}],
+            "source_unknown_records": [{"id": "a2"}],
+            "low_confidence_records": [],
+            "protected_records": [{"id": "a3"}],
+        },
+    )
+
+    payload = json.loads(await server.inventory(include_records=False))
+
+    assert payload == {
+        "read_only": True,
+        "records": ["a1"],
+        "raw_transcript_records": ["a1"],
+        "source_unknown_records": ["a2"],
+        "low_confidence_records": [],
+        "protected_records": ["a3"],
+    }
 
 
 @pytest.mark.asyncio

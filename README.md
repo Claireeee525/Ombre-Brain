@@ -413,6 +413,18 @@ buckets_dir: "/path/to/your/Obsidian Vault/Ombre Brain"
 不设的话，默认用项目目录下的 `buckets/`。
 If not set, defaults to `buckets/` in the project directory.
 
+## 只读盘点与重复审核 / Read-only Inventory
+
+清理旧库前先运行盘点。它只读取 Markdown 记忆桶和 `embeddings.db`，不会改状态、删除文件或自动合并：
+
+```bash
+python inventory.py --buckets-dir "/path/to/Ombre Brain" > inventory.json
+```
+
+盘点报告包含：来源与状态计数、原始聊天命中、来源不明记录、低置信度记录、保护/置顶记录、内容哈希重复组、同名待比较组、损坏 Markdown，以及孤立 embedding / graph family 成员。`same_name_review_groups` 只是审核清单，同名不等于重复。
+
+运行中的服务也提供只读 MCP 工具 `inventory` 和 `dupes`，以及受认证保护的 `/api/inventory`、`/api/dupes` 路由，供小家展示审核清单。任何清理前都应保存报告，并把拟处理的记忆 ID 交给 Claire 审核。
+
 ## 配置 / Configuration
 
 所有参数在 `config.yaml`（从 `config.example.yaml` 复制）。关键的几个：
