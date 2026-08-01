@@ -140,6 +140,10 @@ def test_oauth_flow_tokens_and_client_survive_server_restart(tmp_path):
         assert login_page.status_code == 200
         assert "Claude official connector" in login_page.text
         assert "owner-password" not in login_page.text
+        assert 'type="submit"' in login_page.text
+        assert "正在连接" in login_page.text
+        assert f'action="{BASE_URL}/oauth/callback"' in login_page.text
+        assert "script-src 'nonce-" in login_page.headers["content-security-policy"]
 
         callback = client.post(
             "/oauth/callback",

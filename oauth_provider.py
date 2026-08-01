@@ -188,6 +188,8 @@ class OmbreOAuthProvider(
         client_name = html.escape(str(pending.get("client_name") or "Claude"))
         state_value = html.escape(state, quote=True)
         owner_name = html.escape(self.owner_name)
+        callback_url = html.escape(f"{self.issuer_url}/oauth/callback", quote=True)
+        script_nonce = secrets.token_urlsafe(18)
         body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>连接 Ombre</title><style>
@@ -196,13 +198,20 @@ main{{max-width:430px;margin:10vh auto;padding:28px;border:1px solid #334252;bor
 h1{{font-size:23px;margin:0 0 8px}}p{{color:#aebdca}}label{{display:block;margin:22px 0 7px}}
 input{{box-sizing:border-box;width:100%;padding:13px;border:1px solid #46596d;border-radius:10px;background:#0f141a;color:#fff}}
 button{{width:100%;margin-top:18px;padding:13px;border:0;border-radius:12px;background:#86a9c5;color:#0e1720;font-weight:700}}
+button:disabled{{opacity:.72;cursor:wait}}#submit-status{{min-height:24px;margin:12px 0 0;color:#b8cada}}
 small{{display:block;margin-top:16px;color:#8093a5}}
 </style></head><body><main><h1>把 Ombre 连接给 {client_name}</h1>
 <p>登录后，官端可以读取和使用 {owner_name} 的 Ombre 记忆工具。没有确认就不会放行。</p>
-<form method="post" action="/oauth/callback"><input type="hidden" name="state" value="{state_value}">
+<form id="oauth-form" method="post" action="{callback_url}"><input type="hidden" name="state" value="{state_value}">
 <label for="password">Ombre 密码</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-<button type="submit">确认连接</button></form><small>授权采用 OAuth 2.1 + PKCE；密码不会交给官端。</small></main></body></html>"""
-        return HTMLResponse(body, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+<button id="connect-button" type="submit">确认连接</button><p id="submit-status" role="status" aria-live="polite"></p></form>
+<small>授权采用 OAuth 2.1 + PKCE；密码不会交给官端。</small></main>
+<script nonce="{script_nonce}">document.getElementById('oauth-form').addEventListener('submit',function(){{
+var b=document.getElementById('connect-button'),s=document.getElementById('submit-status');
+b.disabled=true;b.textContent='正在连接…';s.textContent='正在验证并返回 Claude，请稍候。';
+setTimeout(function(){{b.disabled=false;b.textContent='重新确认连接';s.textContent='如果仍未跳转，请按回车重试一次。';}},15000);
+}});</script></body></html>"""
+        return HTMLResponse(body, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": f"default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{script_nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
     def _login_limited(self, address: str) -> bool:
         now = time.time()
@@ -213,6 +222,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
 
     async def login_callback(self, request: Request) -> Response:
         address = request.client.host if request.client else "unknown"
+        logger.info("OAuth callback received")
         if self._login_limited(address):
             return HTMLResponse("<h1>尝试次数过多，请十分钟后再试。</h1>", status_code=429)
         form = await request.form()
@@ -226,6 +236,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
         if not pending or pending.get("expires_at", 0) < time.time():
             logger.warning("OAuth callback state missing or expired (pending=%d)", len(self._store["pending_authorizations"]))
             return HTMLResponse("<h1>这次连接请求已失效，请回到官端重试。</h1>", status_code=400)
+        logger.info("OAuth callback state accepted for client %.12s", str(pending.get("client_id") or ""))
         if not self.verify_owner_password(password):
             self._failed_logins[address].append(time.time())
             async with self._lock:
@@ -260,6 +271,7 @@ small{{display:block;margin-top:16px;color:#8093a5}}
             durable_pending["last_callback_at"] = int(time.time())
             self._audit("owner_authorized", client_id=code.client_id)
             self._write_store()
+        logger.info("OAuth owner authorization completed for client %.12s", code.client_id)
         redirect = construct_redirect_uri(str(code.redirect_uri), code=raw_code, state=pending.get("oauth_state"))
         return RedirectResponse(redirect, status_code=302)
 
