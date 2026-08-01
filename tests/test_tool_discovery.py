@@ -13,6 +13,7 @@ EXPECTED_TOOL_ALIASES = {
     "hold": ("保存", "remember", "memory"),
     "curate": ("记忆整理", "organize", "memory"),
     "memory_review": ("候选记忆审核", "review", "memory"),
+    "review_queue": ("待审候选", "review", "candidate"),
     "memory_stance": ("记忆表态", "annotate", "memory"),
     "grow": ("日记归档", "archive", "memory"),
     "trace": ("修改", "edit", "memory"),
@@ -26,6 +27,7 @@ EXPECTED_TOOL_ALIASES = {
     "dupes": ("重复审核组", "duplicate", "review"),
     "pulse": ("系统状态", "status", "memories"),
     "dream": ("做梦", "reflect", "memory"),
+    "handoff": ("短期状态", "handoff", "short-term"),
 }
 
 

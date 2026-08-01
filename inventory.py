@@ -20,6 +20,8 @@ from urllib.parse import quote
 
 import frontmatter
 
+from memory_layers import normalize_layer_metadata
+
 
 STORAGE_DIRS = ("permanent", "dynamic", "feel", "archive")
 SOURCE_FIELDS = (
@@ -95,6 +97,7 @@ def _safe_preview(content: str, limit: int = 180) -> str:
 def _record_from_post(path: Path, root: Path, post: Any) -> dict[str, Any]:
     metadata = dict(post.metadata)
     content = str(post.content or "")
+    layer_metadata = normalize_layer_metadata(metadata, content)
     bucket_id = str(metadata.get("id") or path.stem)
     status = str(metadata.get("memory_status") or "confirmed")
     confidence, low_confidence, missing_confidence = _confidence_flags(metadata)
@@ -112,6 +115,10 @@ def _record_from_post(path: Path, root: Path, post: Any) -> dict[str, Any]:
         "created": metadata.get("created", ""),
         "last_active": metadata.get("last_active", ""),
         "memory_status": status,
+        "memory_layer": layer_metadata["memory_layer"],
+        "recall_policy": layer_metadata["recall_policy"],
+        "expired": layer_metadata["expired"],
+        "expires_at": metadata.get("expires_at", ""),
         "source_kind": str(metadata.get("source_kind") or "legacy"),
         "source_surface": str(metadata.get("source_surface") or ""),
         "source_known": source_known,
@@ -254,6 +261,7 @@ def build_inventory(buckets_dir: str | Path, *, include_archive: bool = True) ->
         records = [record for record in records if record["storage_layer"] != "archive"]
 
     status_counts = Counter(record["memory_status"] for record in records)
+    layer_counts = Counter(record["memory_layer"] for record in records)
     source_counts = Counter(record["source_kind"] for record in records)
     id_groups = _groups(records, "id")
     content_groups = _groups(records, "content_sha256")
@@ -280,6 +288,7 @@ def build_inventory(buckets_dir: str | Path, *, include_archive: bool = True) ->
             "malformed_files": len(malformed),
             "archived_records": sum(record["storage_layer"] == "archive" for record in records),
             "status": dict(sorted(status_counts.items())),
+            "memory_layer": dict(sorted(layer_counts.items())),
             "source_kind": dict(sorted(source_counts.items())),
             "raw_transcripts": len(raw_records),
             "source_unknown": len(unknown_records),

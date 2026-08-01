@@ -36,6 +36,7 @@ from typing import Optional
 import frontmatter
 from rapidfuzz import fuzz
 
+from memory_layers import memory_recallable
 from utils import generate_bucket_id, sanitize_name, safe_path, now_iso
 
 logger = logging.getLogger("ombre_brain.bucket")
@@ -169,7 +170,8 @@ class BucketManager:
             "memory_status", "confidence", "valid_from", "valid_to", "supersedes",
             "superseded_by", "operation", "rationale", "reviewed_at", "review_decision",
             "batch_id", "memory_scope", "signed_by", "evidence_speakers", "participants",
-            "curated_by", "source_surface", "evidence_quotes",
+            "curated_by", "source_surface", "evidence_quotes", "memory_layer",
+            "recall_policy", "expires_at", "source_bucket",
         }
         for key, value in (extra_metadata or {}).items():
             if key not in allowed_extra or value is None:
@@ -319,7 +321,14 @@ class BucketManager:
             post["digested"] = bool(kwargs["digested"])
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
-        for key in ("memory_status", "reviewed_at", "review_decision", "superseded_by"):
+        for key in (
+            "memory_status", "reviewed_at", "review_decision", "superseded_by",
+            "reviewed_by", "review_reason", "review_request_id", "status_before_reject",
+            "restored_at", "memory_layer_before_reject",
+        ):
+            if key in kwargs:
+                post[key] = str(kwargs[key])[:180]
+        for key in ("memory_layer", "recall_policy", "expires_at", "source_bucket"):
             if key in kwargs:
                 post[key] = str(kwargs[key])[:180]
         if "confidence" in kwargs:
@@ -508,6 +517,7 @@ class BucketManager:
         query_valence: float = None,
         query_arousal: float = None,
         include_candidates: bool = False,
+        recall_mode: str = "normal",
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -523,8 +533,12 @@ class BucketManager:
         all_buckets = await self.list_all(include_archive=False)
         all_buckets = [
             bucket for bucket in all_buckets
-            if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") == "confirmed"
-            or (include_candidates and bucket.get("metadata", {}).get("memory_status") == "candidate")
+            if memory_recallable(
+                bucket.get("metadata", {}),
+                bucket.get("content", ""),
+                mode=recall_mode,
+                include_candidates=include_candidates,
+            )
         ]
 
         if not all_buckets:

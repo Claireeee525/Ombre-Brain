@@ -308,16 +308,33 @@ breath(query="今天很累")
     返回 ≤20 条结果
 ```
 
-6 个 MCP 工具 / 6 MCP tools:
+核心 MCP 工具 / Core MCP tools:
 
 | 工具 Tool | 作用 Purpose |
 |-----------|-------------|
 | `breath` | 浮现或检索记忆。无参数=推送未解决记忆；有参数=关键词+向量语义双通道检索。支持 domain/valence/arousal 过滤 / Surface or search memories. No args = surface unresolved; with query = keyword + vector dual-channel search. Supports domain/valence/arousal filters |
 | `hold` | 存储单条记忆，自动打标+合并相似桶+生成 embedding。`feel=True` 写模型自己的感受 / Store a single memory with auto-tagging, merging, and embedding. `feel=True` for model's own reflections |
 | `grow` | 日记归档，自动拆分长内容为多个记忆桶，每个桶自动生成 embedding / Diary digest, auto-split into multiple buckets with embeddings |
-| `trace` | 修改元数据、标记已解决、删除 / Modify metadata, mark resolved, delete |
+| `trace` | 修改元数据、标记已解决；`delete=True` 只做可恢复归档，不物理删除 / Modify metadata, mark resolved; `delete=True` soft-archives and keeps evidence recoverable |
 | `pulse` | 系统状态 + 所有记忆桶列表 / System status + bucket listing |
 | `dream` | 对话开头自省消化——读最近记忆，有沉淀写 feel，能放下就 resolve / Self-reflection at conversation start |
+| `review_queue` | 只读候选审核队列：自动整理内容、来源和原文引用，不参与正常召回 / Read-only candidate review queue; candidates never enter normal recall |
+| `handoff` | 只读短期状态/项目线头，按 `expires_at` 输出换窗交接卡 / Read-only short-term handoff with expiry |
+
+### 六层记忆边界 / Six Memory Layers
+
+每个记忆桶都可以通过 `memory_layer` 和 `recall_policy` 表达它在系统里的位置。旧桶没有这两个字段时，服务会在读取时兼容推导，不会批量改写原文件。
+
+| 层 | 放什么 | 默认入口 |
+|---|---|---|
+| `evidence` | 完整聊天、时间、说话人 | `breath(recall_mode="exact")` 或 `"evidence"` |
+| `candidate` | 自动整理出的摘要和推断 | `review_queue` / `breath(recall_mode="review")` |
+| `active` | 已确认的事件、边界、承诺、关系经验 | 普通 `breath()` |
+| `short_term` | 当前项目、没说完的话、临时照顾事项 | `handoff` / `breath(recall_mode="handoff")`，必须有 `expires_at` |
+| `feel` / `dream` | 模型的感受与联想 | `breath(recall_mode="accompany")`，不能作为事实证据 |
+| `archive` | 已拒绝、已归档但可恢复的底稿 | 默认隐藏；通过审核恢复 |
+
+默认召回在排序和 embedding 之前先过层级门卫：候选不会偷偷进入长期记忆，原文不会被当成摘要，短期状态不会无限期滞留，Feel/Dream 只能作为真实命中后的陪伴材料。`memory_review` 的 reject/trace delete/API DELETE 都是软归档，保留正文和来源以便 restore。
 
 ## 安装 / Setup
 

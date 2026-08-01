@@ -10,7 +10,7 @@
 # 核心职责：
 #   - Initialize config, bucket manager, dehydrator, decay engine
 #     初始化配置、记忆桶管理器、脱水器、衰减引擎
-#   - Expose 6 MCP tools:
+#   - Expose memory, review, handoff, graph, somatic, and audit MCP tools:
 #     暴露 6 个 MCP 工具：
 #       breath — Surface unresolved memories or search by keyword
 #                浮现未解决记忆 或 按关键词检索
@@ -66,13 +66,20 @@ from curator import (
 )
 from inventory import build_inventory
 from backup import create_backup, verify_backup
+from memory_layers import (
+    MEMORY_LAYERS,
+    RECALL_POLICIES,
+    layer_fields,
+    memory_recallable,
+    normalize_layer_metadata,
+)
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 from oauth_provider import OmbreOAuthProvider, install_oauth_login_routes
 import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.5.5"
+OMBRE_VERSION = "1.6.0"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -823,9 +830,10 @@ async def breath(
     max_results: int = 20,
     importance_min: int = -1,
     include_candidates: bool = False,
+    recall_mode: str = "normal",
     response_format: str = "text",
 ) -> str:
-    """breath 记忆检索 浮现 recall memory。【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。response_format可选text或packet；packet只用于有query的结构化召回，包含bucket_id、来源、日期与命中类型。"""
+    """breath 记忆检索 浮现 recall memory。【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。默认只召回有效记忆；recall_mode可选normal/evidence/review/handoff/accompany，分别读取有效记忆、原文证据、待审候选、短期线头、Feel/Dream伴随层。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。response_format可选text或packet；packet只用于有query的结构化召回，包含bucket_id、来源、日期与命中类型。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -840,8 +848,10 @@ async def breath(
         filtered = [
             b for b in all_buckets
             if int(b["metadata"].get("importance", 0)) >= importance_min
-            and b["metadata"].get("type") not in ("feel",)
-            and _curator_recallable(b["metadata"], include_candidates)
+            and _curator_recallable(
+                b["metadata"], include_candidates,
+                content=b.get("content", ""), recall_mode=recall_mode,
+            )
         ]
         filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
         filtered = filtered[:20]
@@ -878,7 +888,11 @@ async def breath(
         # --- 钉选桶：作为核心准则，始终浮现 ---
         pinned_buckets = [
             b for b in all_buckets
-            if b["metadata"].get("pinned") or b["metadata"].get("protected")
+            if (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+            and _curator_recallable(
+                b["metadata"], include_candidates,
+                content=b.get("content", ""), recall_mode=recall_mode,
+            )
         ]
         pinned_results = []
         for b in pinned_buckets:
@@ -899,7 +913,10 @@ async def breath(
             and b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
-            and _curator_recallable(b["metadata"], include_candidates)
+            and _curator_recallable(
+                b["metadata"], include_candidates,
+                content=b.get("content", ""), recall_mode=recall_mode,
+            )
         ]
 
         logger.info(
@@ -1014,6 +1031,7 @@ async def breath(
             query_valence=q_valence,
             query_arousal=q_arousal,
             include_candidates=include_candidates,
+            recall_mode=recall_mode,
         )
     except Exception as e:
         logger.error(f"Search failed / 检索失败: {e}")
@@ -1024,8 +1042,10 @@ async def breath(
     matches = [
         b for b in matches
         if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
-        and b["metadata"].get("type") != "feel"
-        and _curator_recallable(b["metadata"], include_candidates)
+        and _curator_recallable(
+            b["metadata"], include_candidates,
+            content=b.get("content", ""), recall_mode=recall_mode,
+        )
     ]
 
     if str(response_format or "text").strip().lower() == "packet":
@@ -1116,8 +1136,10 @@ async def hold(
     signed_by: str = "",
     source_surface: str = "",
     source_session_id: str = "",
+    memory_layer: str = "active",
+    expires_at: str = "",
 ) -> str:
-    """hold 保存 记住 写入 store remember memory。【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条共同记忆,自动打标+合并。珂洛与Calder读写同一个池；signed_by请填本次经手者(珂洛或Calder)，只作署名不作隔离。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
+    """hold 保存 记住 写入 store remember memory。【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条共同记忆,自动打标+合并。珂洛与Calder读写同一个池；signed_by请填本次经手者(珂洛或Calder)，只作署名不作隔离。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。memory_layer可选active/short_term/candidate，短期线头必须提供expires_at。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -1126,6 +1148,12 @@ async def hold(
 
     importance = max(1, min(10, importance))
     extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+    try:
+        requested_layer = "feel" if feel else (memory_layer or "active")
+        canonical_layer = layer_fields(requested_layer, expires_at=expires_at)
+    except ValueError as exc:
+        return f"记忆层级参数无效: {exc}"
 
     # --- Feel mode: store as feel type, minimal metadata ---
     # --- Feel 模式：存为 feel 类型，最少元数据 ---
@@ -1142,6 +1170,7 @@ async def hold(
             arousal=feel_arousal,
             name=None,
             bucket_type="feel",
+            extra_metadata=canonical_layer,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -1190,6 +1219,7 @@ async def hold(
         "source_session_id": source_session_id.strip(),
         "source_kind": "direct_hold",
         "memory_status": "confirmed",
+        **canonical_layer,
     }
 
     # --- Pinned buckets bypass merge and are created directly in permanent dir ---
@@ -1244,9 +1274,20 @@ def _curator_domain(item: dict) -> list[str]:
     }.get(item.get("kind"), ["未分类"])
 
 
-def _curator_recallable(meta: dict, include_candidates: bool = False) -> bool:
-    status = str((meta or {}).get("memory_status") or "confirmed")
-    return status == "confirmed" or (include_candidates and status == "candidate")
+def _curator_recallable(
+    meta: dict,
+    include_candidates: bool = False,
+    *,
+    content: str = "",
+    recall_mode: str = "normal",
+) -> bool:
+    """Compatibility wrapper around the canonical layer gate."""
+    return memory_recallable(
+        meta or {},
+        content,
+        mode=recall_mode,
+        include_candidates=include_candidates,
+    )
 
 
 async def _curator_find_collision(item: dict, buckets: list[dict]):
@@ -1376,6 +1417,7 @@ async def curate(payload: str) -> str:
             "participants": item["participants"],
             "curated_by": item["curated_by"],
             "source_surface": item["source_surface"],
+            **layer_fields("candidate" if item["status"] == "candidate" else "active"),
         }
         try:
             bucket_id = await bucket_mgr.create(
@@ -1418,6 +1460,9 @@ async def curate(payload: str) -> str:
                         item["supersedes"],
                         memory_status="rejected",
                         resolved=True,
+                        memory_layer="archive",
+                        recall_policy=RECALL_POLICIES["archive"],
+                        memory_layer_before_reject="candidate",
                         reviewed_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         review_decision="supersede",
                         superseded_by=bucket_id,
@@ -1453,6 +1498,9 @@ async def memory_review(
         return _json_lib.dumps({"ok": False, "error": "找不到这条记忆"}, ensure_ascii=False)
     metadata = bucket.get("metadata", {})
     current_status = str(metadata.get("memory_status") or "confirmed")
+    current_layer = normalize_layer_metadata(
+        metadata, bucket.get("content", "")
+    ).get("memory_layer", "active")
 
     if decision == "restore":
         if current_status != "rejected":
@@ -1494,11 +1542,125 @@ async def memory_review(
     if decision in {"reject", "supersede"}:
         updates["resolved"] = True
         updates["status_before_reject"] = current_status
+        updates["memory_layer_before_reject"] = current_layer
+        updates["memory_layer"] = "archive"
+        updates["recall_policy"] = RECALL_POLICIES["archive"]
+    elif decision == "confirm":
+        updates["memory_layer"] = "active"
+        updates["recall_policy"] = RECALL_POLICIES["active"]
     elif decision == "restore":
         updates["resolved"] = False
         updates["restored_at"] = now
+        restored_layer = str(metadata.get("memory_layer_before_reject") or "active")
+        if restored_layer not in MEMORY_LAYERS or restored_layer == "archive":
+            restored_layer = "active"
+        updates["memory_layer"] = restored_layer
+        updates["recall_policy"] = RECALL_POLICIES[restored_layer]
     await bucket_mgr.update(bucket["id"], **updates)
     return _json_lib.dumps({"ok": True, "bucket_id": bucket["id"], **updates}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def review_queue(limit: int = 50) -> str:
+    """review_queue 待审候选 审阅工作台 candidate review queue。【自动整理内容专用】只返回候选记忆、原文证据引用和来源，不参与正常召回；不会修改、删除或合并。"""
+    try:
+        limit = max(1, min(int(limit or 50), 200))
+        stored = await bucket_mgr.list_all(include_archive=False)
+        candidates = []
+        for bucket in stored:
+            meta = normalize_layer_metadata(
+                bucket.get("metadata", {}), bucket.get("content", "")
+            )
+            if meta.get("memory_layer") != "candidate":
+                continue
+            candidates.append({
+                "bucket_id": bucket["id"],
+                "title": meta.get("name", bucket["id"]),
+                "content": strip_wikilinks(bucket.get("content", "")),
+                "memory_layer": meta["memory_layer"],
+                "recall_policy": meta["recall_policy"],
+                "confidence": meta.get("confidence"),
+                "source_kind": meta.get("source_kind", "legacy"),
+                "source_surface": meta.get("source_surface", ""),
+                "source_session_id": meta.get("source_session_id", ""),
+                "source_message_ids": meta.get("source_message_ids", []),
+                "evidence_quotes": meta.get("evidence_quotes", []),
+                "operation": meta.get("operation", "add"),
+                "supersedes": meta.get("supersedes", ""),
+                "created": meta.get("created", ""),
+            })
+        candidates.sort(key=lambda item: item.get("created", ""), reverse=True)
+        return _json_lib.dumps({
+            "source": "ombre_brain",
+            "read_only": True,
+            "memory_layer": "candidate",
+            "recall_policy": "review_only",
+            "total": len(candidates),
+            "items": candidates[:limit],
+        }, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        logger.exception("Review queue export failed")
+        return _json_lib.dumps({
+            "source": "ombre_brain",
+            "read_only": True,
+            "error": str(exc),
+            "total": 0,
+            "items": [],
+        }, ensure_ascii=False, separators=(",", ":"))
+
+
+@mcp.tool()
+async def handoff(max_results: int = 12, max_tokens: int = 4000) -> str:
+    """handoff 短期状态 线头交接 short-term handoff。【换窗时调用】只读取未过期的短期状态和项目线头，带 expires_at；不会把候选、原文证据或 Feel/Dream 当成事实召回。"""
+    try:
+        max_results = max(1, min(int(max_results or 12), 50))
+        max_tokens = max(500, min(int(max_tokens or 4000), 12000))
+        stored = await bucket_mgr.list_all(include_archive=False)
+        items = []
+        for bucket in stored:
+            meta = normalize_layer_metadata(
+                bucket.get("metadata", {}), bucket.get("content", "")
+            )
+            if not memory_recallable(meta, bucket.get("content", ""), mode="handoff"):
+                continue
+            items.append({
+                "bucket_id": bucket["id"],
+                "title": meta.get("name", bucket["id"]),
+                "content": strip_wikilinks(bucket.get("content", ""))[:1200],
+                "expires_at": meta.get("expires_at", ""),
+                "created": meta.get("created", ""),
+                "source_kind": meta.get("source_kind", "legacy"),
+                "source_session_id": meta.get("source_session_id", ""),
+                "memory_layer": "short_term",
+                "recall_policy": "handoff_only",
+            })
+        items.sort(key=lambda item: (item.get("expires_at", ""), item.get("created", "")))
+        selected = []
+        used = 0
+        for item in items[:max_results]:
+            cost = count_tokens_approx(_json_lib.dumps(item, ensure_ascii=False))
+            if selected and used + cost > max_tokens:
+                break
+            selected.append(item)
+            used += cost
+        return _json_lib.dumps({
+            "source": "ombre_brain",
+            "read_only": True,
+            "memory_layer": "short_term",
+            "recall_policy": "handoff_only",
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "total": len(selected),
+            "items": selected,
+        }, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        logger.exception("Handoff export failed")
+        return _json_lib.dumps({
+            "source": "ombre_brain",
+            "read_only": True,
+            "error": str(exc),
+            "total": 0,
+            "items": [],
+        }, ensure_ascii=False, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -1652,11 +1814,18 @@ async def trace(
         return "请提供有效的 bucket_id。"
 
     # --- Delete mode / 删除模式 ---
+    # Deletion is a recoverable status change.  The Markdown evidence and its
+    # provenance stay on disk so restore can bring the memory back.
     if delete:
-        success = await bucket_mgr.delete(bucket_id)
-        if success:
-            embedding_engine.delete_embedding(bucket_id)
-        return f"已遗忘记忆桶: {bucket_id}" if success else f"未找到记忆桶: {bucket_id}"
+        receipt = _json_lib.loads(await memory_review(
+            bucket_id,
+            decision="reject",
+            actor="trace(delete)",
+            reason="soft_archive",
+        ))
+        if not receipt.get("ok"):
+            return f"归档失败: {receipt.get('error', '未知错误')}"
+        return f"已归档记忆桶（可恢复）: {bucket_id}"
 
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
@@ -2407,6 +2576,7 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
         node_rank = {}
         for bucket in selected:
             meta = bucket.get("metadata", {})
+            layer_meta = normalize_layer_metadata(meta, bucket.get("content", ""))
             bucket_id = bucket["id"]
             fam = family_by_member.get(bucket_id)
             score = decay_engine.calculate_score(meta)
@@ -2428,6 +2598,10 @@ async def constellation(limit: int = 220, include_archive: bool = False) -> str:
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 1),
                 "memory_status": meta.get("memory_status", "confirmed"),
+                "memory_layer": layer_meta["memory_layer"],
+                "recall_policy": layer_meta["recall_policy"],
+                "expired": layer_meta["expired"],
+                "expires_at": meta.get("expires_at", ""),
                 "confidence": meta.get("confidence"),
                 "source_kind": meta.get("source_kind", "legacy"),
                 "source_session_id": meta.get("source_session_id", ""),
@@ -2540,6 +2714,7 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
         pages = []
         for bucket in visible[offset:offset + limit]:
             meta = bucket.get("metadata", {})
+            layer_meta = normalize_layer_metadata(meta, bucket.get("content", ""))
             pages.append({
                 "id": bucket["id"],
                 "name": meta.get("name", bucket["id"]),
@@ -2553,6 +2728,10 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
                 "created": meta.get("created", ""),
                 "last_active": meta.get("last_active", ""),
                 "memory_status": meta.get("memory_status", "confirmed"),
+                "memory_layer": layer_meta["memory_layer"],
+                "recall_policy": layer_meta["recall_policy"],
+                "expired": layer_meta["expired"],
+                "expires_at": meta.get("expires_at", ""),
                 "confidence": meta.get("confidence"),
                 "memory_scope": meta.get("memory_scope", "home_shared"),
                 "signed_by": meta.get("signed_by", []),
@@ -2996,6 +3175,7 @@ async def api_buckets(request):
         result = []
         for b in all_buckets:
             meta = b.get("metadata", {})
+            layer_meta = normalize_layer_metadata(meta, b.get("content", ""))
             result.append({
                 "id": b["id"],
                 "name": meta.get("name", b["id"]),
@@ -3013,6 +3193,10 @@ async def api_buckets(request):
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 1),
                 "memory_status": meta.get("memory_status", "confirmed"),
+                "memory_layer": layer_meta["memory_layer"],
+                "recall_policy": layer_meta["recall_policy"],
+                "expired": layer_meta["expired"],
+                "expires_at": meta.get("expires_at", ""),
                 "confidence": meta.get("confidence"),
                 "source_kind": meta.get("source_kind", "legacy"),
                 "source_session_id": meta.get("source_session_id", ""),
@@ -3041,9 +3225,13 @@ async def api_bucket_detail(request):
     if not bucket:
         return JSONResponse({"error": "not found"}, status_code=404)
     meta = bucket.get("metadata", {})
+    layer_meta = normalize_layer_metadata(meta, bucket.get("content", ""))
     return JSONResponse({
         "id": bucket["id"],
         "metadata": meta,
+        "memory_layer": layer_meta["memory_layer"],
+        "recall_policy": layer_meta["recall_policy"],
+        "expired": layer_meta["expired"],
         "content": strip_wikilinks(bucket.get("content", "")),
         "score": decay_engine.calculate_score(meta),
     })
@@ -3097,19 +3285,21 @@ async def api_bucket_edit(request):
 
 @mcp.custom_route("/api/bucket/{bucket_id}", methods=["DELETE"])
 async def api_bucket_delete(request):
-    """Delete a bucket from the dashboard."""
+    """Soft-archive a bucket from the dashboard; keep evidence recoverable."""
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
     bucket_id = request.path_params["bucket_id"]
-    ok = await bucket_mgr.delete(bucket_id)
-    if ok:
-        try:
-            embedding_engine.delete_embedding(bucket_id)
-        except Exception:
-            pass
-        return JSONResponse({"ok": True})
-    return JSONResponse({"error": "not found"}, status_code=404)
+    receipt = _json_lib.loads(await memory_review(
+        bucket_id,
+        decision="reject",
+        actor="dashboard",
+        reason="soft_archive",
+    ))
+    if receipt.get("ok"):
+        return JSONResponse({**receipt, "recoverable": True, "physical_delete": False})
+    status = 404 if "找不到" in str(receipt.get("error", "")) else 400
+    return JSONResponse(receipt, status_code=status)
 
 
 @mcp.custom_route("/api/search", methods=["GET"])
