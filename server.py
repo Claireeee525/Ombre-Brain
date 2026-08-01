@@ -44,6 +44,7 @@ import secrets
 import time
 import json as _json_lib
 import httpx
+from pathlib import Path
 
 
 # --- Ensure same-directory modules can be imported ---
@@ -64,6 +65,7 @@ from curator import (
     normalize_curate_payload,
 )
 from inventory import build_inventory
+from backup import create_backup, verify_backup
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 from oauth_provider import OmbreOAuthProvider, install_oauth_login_routes
 import somatic_state
@@ -2717,6 +2719,69 @@ async def api_dupes(request):
     except Exception as exc:
         logger.exception("Duplicate review API export failed")
         return JSONResponse({"read_only": True, "error": str(exc)}, status_code=500)
+
+
+def _backup_output_dir() -> Path:
+    configured = os.environ.get("OMBRE_BACKUP_DIR", "").strip()
+    return Path(configured).expanduser() if configured else Path(config["buckets_dir"]) / ".backups"
+
+
+@mcp.custom_route("/api/backups", methods=["GET"])
+async def api_backups(request):
+    """List backup receipts without reading or changing live memories."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    backup_dir = _backup_output_dir()
+    receipts = []
+    for manifest_path in sorted(backup_dir.glob("ombre-backup-*.manifest.json"), reverse=True):
+        try:
+            manifest = _json_lib.loads(manifest_path.read_text(encoding="utf-8"))
+            archive_name = manifest_path.name.removesuffix(".manifest.json") + ".tar.gz"
+            archive_path = manifest_path.with_name(archive_name)
+            receipts.append({
+                "manifest": manifest_path.name,
+                "archive": archive_name,
+                "archive_present": archive_path.is_file(),
+                "generated_at": manifest.get("generated_at", ""),
+                "file_count": len(manifest.get("files", [])),
+                "include_archive": bool(manifest.get("include_archive", True)),
+            })
+        except (OSError, ValueError, TypeError):
+            continue
+    return JSONResponse({"read_only": True, "backup_dir": str(backup_dir), "backups": receipts})
+
+
+@mcp.custom_route("/api/backup", methods=["POST"])
+async def api_backup(request):
+    """Create and immediately restore-verify a backup of the live source."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+    include_archive = body.get("include_archive", True) is not False
+    label = str(body.get("label", "")).strip()[:48]
+    try:
+        receipt = create_backup(
+            config["buckets_dir"],
+            _backup_output_dir(),
+            include_archive=include_archive,
+            label=label,
+        )
+        receipt["verification"] = verify_backup(receipt["archive"], restore_test=True)
+        if not receipt["verification"].get("ok"):
+            return JSONResponse({"ok": False, "status": "verification_failed", **receipt}, status_code=500)
+        return JSONResponse(receipt, status_code=201)
+    except Exception as exc:
+        logger.exception("Backup creation failed")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 # =============================================================

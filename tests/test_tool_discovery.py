@@ -115,6 +115,33 @@ async def test_inventory_http_routes_are_authenticated_and_read_only(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_backup_route_returns_verified_receipt(monkeypatch, tmp_path):
+    class Request:
+        cookies = {}
+        headers = {}
+
+        async def json(self):
+            return {"include_archive": False, "label": "regression"}
+
+    monkeypatch.setattr(server, "_require_auth", lambda request: None)
+    monkeypatch.setattr(server, "create_backup", lambda *args, **kwargs: {
+        "ok": True,
+        "archive": str(tmp_path / "backup.tar.gz"),
+        "file_count": 2,
+    })
+    monkeypatch.setattr(server, "verify_backup", lambda *args, **kwargs: {
+        "ok": True,
+        "restore_tested": True,
+    })
+
+    response = await server.api_backup(Request())
+    payload = json.loads(response.body)
+    assert response.status_code == 201
+    assert payload["verification"]["restore_tested"] is True
+    assert payload["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_public_health_exposes_the_deployed_version(monkeypatch):
     monkeypatch.setattr(
         server.bucket_mgr,

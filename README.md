@@ -425,6 +425,8 @@ python inventory.py --buckets-dir "/path/to/Ombre Brain" > inventory.json
 
 运行中的服务也提供只读 MCP 工具 `inventory` 和 `dupes`，以及受认证保护的 `/api/inventory`、`/api/dupes` 路由，供小家展示审核清单。任何清理前都应保存报告，并把拟处理的记忆 ID 交给 Claire 审核。
 
+备份先于任何清理：受认证保护的 `POST /api/backup` 会把 Markdown 事实源和 SQLite 索引写入 `.backups/`（可用 `OMBRE_BACKUP_DIR` 指定目录），并立即在临时目录完成哈希校验和恢复演练；`GET /api/backups` 只列出备份回执。备份只新增归档，不会删除、改状态或合并记忆。
+
 ## 配置 / Configuration
 
 所有参数在 `config.yaml`（从 `config.example.yaml` 复制）。关键的几个：
