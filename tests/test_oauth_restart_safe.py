@@ -144,6 +144,7 @@ def test_oauth_flow_tokens_and_client_survive_server_restart(tmp_path):
         assert "正在连接" in login_page.text
         assert f'action="{BASE_URL}/oauth/callback"' in login_page.text
         assert "script-src 'nonce-" in login_page.headers["content-security-policy"]
+        assert "form-action 'self' https://claude.example" in login_page.headers["content-security-policy"]
 
         callback = client.post(
             "/oauth/callback",

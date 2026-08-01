@@ -20,7 +20,7 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
@@ -190,6 +190,11 @@ class OmbreOAuthProvider(
         owner_name = html.escape(self.owner_name)
         callback_url = html.escape(f"{self.issuer_url}/oauth/callback", quote=True)
         script_nonce = secrets.token_urlsafe(18)
+        redirect_parts = urlsplit(str(pending.get("redirect_uri") or ""))
+        redirect_origin = ""
+        if redirect_parts.scheme in {"http", "https"} and redirect_parts.netloc:
+            redirect_origin = f"{redirect_parts.scheme}://{redirect_parts.netloc}"
+        form_action_sources = "'self'" + (f" {redirect_origin}" if redirect_origin else "")
         body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>连接 Ombre</title><style>
@@ -211,7 +216,7 @@ var b=document.getElementById('connect-button'),s=document.getElementById('submi
 b.disabled=true;b.textContent='正在连接…';s.textContent='正在验证并返回 Claude，请稍候。';
 setTimeout(function(){{b.disabled=false;b.textContent='重新确认连接';s.textContent='如果仍未跳转，请按回车重试一次。';}},15000);
 }});</script></body></html>"""
-        return HTMLResponse(body, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": f"default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{script_nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+        return HTMLResponse(body, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": f"default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{script_nonce}'; form-action {form_action_sources}; base-uri 'none'; frame-ancestors 'none'"})
 
     def _login_limited(self, address: str) -> bool:
         now = time.time()
@@ -273,6 +278,7 @@ setTimeout(function(){{b.disabled=false;b.textContent='重新确认连接';s.tex
             self._write_store()
         logger.info("OAuth owner authorization completed for client %.12s", code.client_id)
         redirect = construct_redirect_uri(str(code.redirect_uri), code=raw_code, state=pending.get("oauth_state"))
+        logger.info("OAuth redirecting browser to %s", urlsplit(redirect).netloc)
         return RedirectResponse(redirect, status_code=302)
 
     async def load_authorization_code(
