@@ -68,7 +68,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.4.4"
+OMBRE_VERSION = "1.4.5"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -109,11 +109,11 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-# Reuse the already shared home-read token unless a dedicated MCP token is
-# supplied.  Existing deployments therefore gain protection without putting a
-# second secret in source control.  An explicit OMBRE_MCP_REQUIRE_AUTH=0 is the
-# only opt-out when a token exists.
-OMBRE_MCP_REQUIRE_AUTH = _env_flag("OMBRE_MCP_REQUIRE_AUTH", bool(OMBRE_MCP_TOKEN))
+# Claude's official remote connector supports public MCP or standard OAuth, but
+# cannot attach this service's ad-hoc static bearer header.  Keep static bearer
+# protection opt-in until the OAuth phase is implemented; otherwise merely
+# defining the private Kelo token would silently lock the official client out.
+OMBRE_MCP_REQUIRE_AUTH = _env_flag("OMBRE_MCP_REQUIRE_AUTH", False)
 
 
 class McpBearerAuthMiddleware:
@@ -261,6 +261,11 @@ mcp = FastMCP(
     "Ombre Brain",
     host="0.0.0.0",
     port=OMBRE_PORT,
+    # Zeabur restarts replace the process and erase stateful MCP session IDs.
+    # Stateless HTTP lets official clients continue after a restart instead of
+    # presenting yesterday's now-unknown mcp-session-id forever.
+    stateless_http=True,
+    json_response=True,
 )
 
 
@@ -486,6 +491,7 @@ async def health_check(request):
             "buckets": stats["permanent_count"] + stats["dynamic_count"],
             "decay_engine": "running" if decay_engine.is_running else "stopped",
             "mcp_auth": "required" if OMBRE_MCP_REQUIRE_AUTH else "disabled",
+            "mcp_transport": "stateless",
         })
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)

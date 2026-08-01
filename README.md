@@ -439,7 +439,7 @@ Sensitive config via env vars:
 - `OMBRE_BUCKETS_DIR` — 覆盖存储路径
 - `OMBRE_DASHBOARD_PASSWORD` — Dashboard 访问密码（可选，见下）
 - `OMBRE_MCP_TOKEN` — 远程 MCP Bearer token（留空时复用 `OMBRE_HOME_READ_TOKEN`）
-- `OMBRE_MCP_REQUIRE_AUTH` — 是否强制远程 MCP 鉴权（有 token 时默认开启）
+- `OMBRE_MCP_REQUIRE_AUTH` — 是否强制静态 Bearer 鉴权（默认关闭；Claude 官端应使用 OAuth）
 
 ## Dashboard 认证 / Dashboard Auth
 
