@@ -72,7 +72,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.5.4"
+OMBRE_VERSION = "1.5.5"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
