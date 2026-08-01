@@ -52,6 +52,8 @@ def load_config(config_path: str = None) -> dict:
         "matching": {
             "fuzzy_threshold": 50,
             "max_results": 5,
+            "keyword_evidence_threshold": 0.72,
+            "semantic_evidence_threshold": 0.72,
         },
     }
 

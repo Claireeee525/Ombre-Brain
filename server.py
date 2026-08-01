@@ -68,7 +68,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.4.3"
+OMBRE_VERSION = "1.4.4"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -96,6 +96,67 @@ OMBRE_HOME_SYNC_URL = os.environ.get(
 # deliberately separate from OMBRE_API_KEY (model access) and the dashboard
 # password/session (human access).
 OMBRE_HOME_READ_TOKEN = os.environ.get("OMBRE_HOME_READ_TOKEN", "").strip()
+OMBRE_MCP_TOKEN = (
+    os.environ.get("OMBRE_MCP_TOKEN", "").strip()
+    or OMBRE_HOME_READ_TOKEN
+)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# Reuse the already shared home-read token unless a dedicated MCP token is
+# supplied.  Existing deployments therefore gain protection without putting a
+# second secret in source control.  An explicit OMBRE_MCP_REQUIRE_AUTH=0 is the
+# only opt-out when a token exists.
+OMBRE_MCP_REQUIRE_AUTH = _env_flag("OMBRE_MCP_REQUIRE_AUTH", bool(OMBRE_MCP_TOKEN))
+
+
+class McpBearerAuthMiddleware:
+    """Require a bearer token only on remote MCP transport routes."""
+
+    _PROTECTED_PREFIXES = ("/mcp", "/sse", "/messages")
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = str(token or "")
+
+    async def __call__(self, scope, receive, send):
+        path = str(scope.get("path") or "")
+        method = str(scope.get("method") or "").upper()
+        protected = any(
+            path == prefix or path.startswith(prefix + "/")
+            for prefix in self._PROTECTED_PREFIXES
+        )
+        if scope.get("type") == "http" and protected and method != "OPTIONS":
+            headers = {
+                key.decode("latin-1").lower(): value.decode("latin-1")
+                for key, value in scope.get("headers", [])
+            }
+            authorization = headers.get("authorization", "")
+            presented = ""
+            if authorization.lower().startswith("bearer "):
+                presented = authorization[7:].strip()
+            if not presented:
+                presented = headers.get("x-ombre-mcp-token", "").strip()
+            if not self.token or not hmac.compare_digest(presented, self.token):
+                body = b'{"error":"unauthorized"}'
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json; charset=utf-8"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                        (b"www-authenticate", b"Bearer"),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
 try:
     CURATOR_DUPLICATE_THRESHOLD = max(
         70.0,
@@ -424,6 +485,7 @@ async def health_check(request):
             "version": OMBRE_VERSION,
             "buckets": stats["permanent_count"] + stats["dynamic_count"],
             "decay_engine": "running" if decay_engine.is_running else "stopped",
+            "mcp_auth": "required" if OMBRE_MCP_REQUIRE_AUTH else "disabled",
         })
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
@@ -549,14 +611,31 @@ async def _merge_or_create(
     检查是否有相似桶可合并，有则合并，无则新建。
     返回 (桶ID或名称, 是否合并)。
     """
+    collision = None
+    collision_score = 0.0
     try:
-        existing = await bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+        item = {"content": content, "title": name, "tags": tags}
+        for candidate in await bucket_mgr.list_all(include_archive=False):
+            meta = candidate.get("metadata", {})
+            if (
+                str(meta.get("memory_status") or "confirmed") != "confirmed"
+                or meta.get("type") in ("permanent", "feel")
+                or meta.get("pinned")
+                or meta.get("protected")
+            ):
+                continue
+            score = duplicate_similarity(item, candidate)
+            if score > collision_score:
+                collision, collision_score = candidate, score
     except Exception as e:
-        logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
-        existing = []
+        logger.warning(f"Duplicate check failed, creating new / 重复检查失败，新建: {e}")
 
-    if existing and existing[0].get("score", 0) > config.get("merge_threshold", 75):
-        bucket = existing[0]
+    # merge_threshold remains configurable, but direct meaning similarity must
+    # also meet the curator's conservative duplicate floor.  Recall ranking,
+    # recency and importance are deliberately absent from this decision.
+    duplicate_floor = max(float(config.get("merge_threshold", 75)), CURATOR_DUPLICATE_THRESHOLD)
+    if collision and collision_score >= duplicate_floor:
+        bucket = collision
         # --- Never merge into pinned/protected buckets ---
         # --- 不合并到钉选/保护桶 ---
         if not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
@@ -898,25 +977,9 @@ async def breath(
     matches = [
         b for b in matches
         if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+        and b["metadata"].get("type") != "feel"
         and _curator_recallable(b["metadata"], include_candidates)
     ]
-
-    # --- Vector similarity channel: find semantically related buckets ---
-    # --- 向量相似度通道：找到语义相关的桶 ---
-    matched_ids = {b["id"] for b in matches}
-    try:
-        vector_results = await embedding_engine.search_similar(query, top_k=max(max_results, 20))
-        for bucket_id, sim_score in vector_results:
-            if bucket_id not in matched_ids and sim_score > 0.5:
-                bucket = await bucket_mgr.get(bucket_id)
-                if (bucket and not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected"))
-                        and _curator_recallable(bucket["metadata"], include_candidates)):
-                    bucket["score"] = round(sim_score * 100, 2)
-                    bucket["vector_match"] = True
-                    matches.append(bucket)
-                    matched_ids.add(bucket_id)
-    except Exception as e:
-        logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
     if str(response_format or "text").strip().lower() == "packet":
         packet_items = []
@@ -924,7 +987,6 @@ async def breath(
             try:
                 match_kind = "related" if bucket.get("vector_match") else "direct"
                 packet_items.append(await _breath_packet_item(bucket, match_kind))
-                await bucket_mgr.touch(bucket["id"])
             except Exception as e:
                 logger.warning(f"Failed to build recall packet item / 召回包拼装失败: {e}")
         payload = {
@@ -972,7 +1034,6 @@ async def breath(
             summary_tokens = count_tokens_approx(summary)
             if token_used + summary_tokens > max_tokens:
                 break
-            await bucket_mgr.touch(bucket["id"])
             if bucket.get("vector_match"):
                 summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
             else:
@@ -982,29 +1043,6 @@ async def breath(
         except Exception as e:
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
             continue
-
-    # --- Random surfacing: when search returns < 3, 40% chance to float old memories ---
-    # --- 随机浮现：检索结果不足 3 条时，40% 概率从低权重旧桶里漂上来 ---
-    if len(matches) < 3 and random.random() < 0.4:
-        try:
-            all_buckets = await bucket_mgr.list_all(include_archive=False)
-            matched_ids = {b["id"] for b in matches}
-            low_weight = [
-                b for b in all_buckets
-                if b["id"] not in matched_ids
-                and decay_engine.calculate_score(b["metadata"]) < 2.0
-            ]
-            if low_weight:
-                drifted = random.sample(low_weight, min(random.randint(1, 3), len(low_weight)))
-                drift_results = []
-                for b in drifted:
-                    clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
-                    summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                    summary += _agent_stance_recall_line(b["metadata"])
-                    drift_results.append(f"[surface_type: random]\n{summary}")
-                results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
-        except Exception as e:
-            logger.warning(f"Random surfacing failed / 随机浮现失败: {e}")
 
     if not results:
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
@@ -3526,6 +3564,15 @@ if __name__ == "__main__":
             _app = mcp.streamable_http_app()
         else:
             _app = mcp.sse_app()
+
+        if OMBRE_MCP_REQUIRE_AUTH:
+            if not OMBRE_MCP_TOKEN:
+                raise RuntimeError(
+                    "OMBRE_MCP_REQUIRE_AUTH is enabled but OMBRE_MCP_TOKEN/"
+                    "OMBRE_HOME_READ_TOKEN is empty"
+                )
+            _app.add_middleware(McpBearerAuthMiddleware, token=OMBRE_MCP_TOKEN)
+            logger.info("Bearer authentication enabled for remote MCP routes")
 
         # 把夜梦循环包进 app 的 lifespan（Starlette 新版没有 add_event_handler）
         import contextlib

@@ -84,6 +84,8 @@ scoring_weights:
 matching:
   fuzzy_threshold: 50             # Minimum match score (0-100) / 最低匹配分数
   max_results: 5                  # Max results per search / 单次搜索最多返回条数
+  keyword_evidence_threshold: 0.72 # Direct lexical evidence gate (0-1) / 直接文本证据门槛
+  semantic_evidence_threshold: 0.72 # Cosine similarity evidence gate (0-1) / 语义证据门槛
 
 # --- Obsidian wikilinks / Obsidian 双链自动注入 ---
 wikilink:

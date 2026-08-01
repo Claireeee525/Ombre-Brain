@@ -60,6 +60,16 @@ class BucketManager:
         self.feel_dir = os.path.join(self.base_dir, "feel")
         self.fuzzy_threshold = config.get("matching", {}).get("fuzzy_threshold", 50)
         self.max_results = config.get("matching", {}).get("max_results", 5)
+        matching = config.get("matching", {})
+        # A result must have direct textual evidence or clear semantic evidence
+        # before recency/emotion/importance are allowed to rank it.  Those soft
+        # signals may reorder a real match, but must never create one.
+        self.keyword_evidence_threshold = max(
+            0.0, min(1.0, float(matching.get("keyword_evidence_threshold", 0.72)))
+        )
+        self.semantic_evidence_threshold = max(
+            0.0, min(1.0, float(matching.get("semantic_evidence_threshold", 0.72)))
+        )
 
         # --- Wikilink config / 双链配置 ---
         wikilink_cfg = config.get("wikilink", {})
@@ -535,17 +545,18 @@ class BucketManager:
         else:
             candidates = all_buckets
 
-        # --- Layer 1.5: embedding pre-filter (optional, reduces multi-dim ranking set) ---
-        # --- 第1.5层：embedding 预筛（可选，缩小精排候选集）---
+        # --- Layer 1.5: semantic evidence (optional, never a blind pre-filter) ---
+        # Exact keyword hits must remain reachable even when the embedding
+        # provider is stale or unavailable.  Semantic scores are only evidence
+        # for admission; they do not replace the lexical candidate set.
+        vector_scores = {}
         if self.embedding_engine and self.embedding_engine.enabled:
             try:
                 vector_results = await self.embedding_engine.search_similar(query, top_k=50)
-                if vector_results:
-                    vector_ids = {bid for bid, _ in vector_results}
-                    emb_candidates = [b for b in candidates if b["id"] in vector_ids]
-                    if emb_candidates:  # only replace if there's non-empty overlap
-                        candidates = emb_candidates
-                    # else: keep original candidates as fallback
+                vector_scores = {
+                    str(bucket_id): float(score)
+                    for bucket_id, score in vector_results
+                }
             except Exception as e:
                 logger.warning(f"Embedding pre-filter failed, using fuzzy only / embedding 预筛失败: {e}")
 
@@ -556,6 +567,13 @@ class BucketManager:
             meta = bucket.get("metadata", {})
 
             try:
+                keyword_evidence = self._calc_keyword_evidence(query, bucket)
+                semantic_evidence = vector_scores.get(str(bucket.get("id") or ""), 0.0)
+                keyword_admitted = keyword_evidence >= self.keyword_evidence_threshold
+                semantic_admitted = semantic_evidence >= self.semantic_evidence_threshold
+                if not keyword_admitted and not semantic_admitted:
+                    continue
+
                 # Dim 1: topic relevance (fuzzy text, 0~1)
                 topic_score = self._calc_topic_score(query, bucket)
 
@@ -581,15 +599,24 @@ class BucketManager:
                 weight_sum = self.w_topic + self.w_emotion + self.w_time + self.w_importance
                 normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
 
-                # Threshold check uses raw (pre-penalty) score so resolved buckets
-                # 阈值用原始分数判定，确保 resolved 桶在关键词命中时仍可被搜出
-                # remain reachable by keyword (penalty applied only to ranking).
+                # Evidence gates decide whether a result exists.  The old
+                # composite threshold is retained only as a ranking floor.
+                # Exact/direct evidence and strong semantic evidence cannot be
+                # buried merely because the memory is old or low-importance.
+                evidence_score = max(
+                    keyword_evidence * 100 if keyword_admitted else 0.0,
+                    semantic_evidence * 100 if semantic_admitted else 0.0,
+                )
+                normalized = max(normalized, evidence_score)
                 if normalized >= self.fuzzy_threshold:
                     # Resolved buckets get ranking penalty (but still reachable by keyword)
                     # 已解决的桶仅在排序时降权
                     if meta.get("resolved", False):
                         normalized *= 0.3
                     bucket["score"] = round(normalized, 2)
+                    bucket["keyword_evidence"] = round(keyword_evidence, 4)
+                    bucket["semantic_evidence"] = round(semantic_evidence, 4)
+                    bucket["vector_match"] = bool(semantic_admitted and not keyword_admitted)
                     scored.append(bucket)
             except Exception as e:
                 logger.warning(
@@ -600,6 +627,31 @@ class BucketManager:
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
+
+    def _calc_keyword_evidence(self, query: str, bucket: dict) -> float:
+        """Return the strongest direct lexical evidence in any source field."""
+        needle = " ".join(str(query or "").casefold().split())
+        if not needle:
+            return 0.0
+        meta = bucket.get("metadata", {})
+        fields = [
+            str(meta.get("name") or ""),
+            " ".join(str(item) for item in (meta.get("domain") or [])),
+            " ".join(str(item) for item in (meta.get("tags") or [])),
+            str(bucket.get("content") or "")[:4000],
+        ]
+        normalized_fields = [" ".join(value.casefold().split()) for value in fields if value]
+        if any(needle in value for value in normalized_fields):
+            return 1.0
+        # Fuzzy partial matching on one or two characters is effectively noise:
+        # it can score an unrelated long memory as a hit.  Short queries must
+        # therefore be literal; longer queries may use conservative fuzziness.
+        if len(needle) <= 2:
+            return 0.0
+        return max(
+            (float(fuzz.WRatio(needle, value)) / 100.0 for value in normalized_fields),
+            default=0.0,
+        )
 
     # ---------------------------------------------------------
     # Topic relevance sub-score:

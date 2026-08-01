@@ -429,6 +429,8 @@ All parameters in `config.yaml` (copy from `config.example.yaml`). Key ones:
 | `decay.lambda` | 衰减速率，越大越快忘 / Decay rate | `0.05` |
 | `decay.threshold` | 归档阈值 / Archive threshold | `0.3` |
 | `merge_threshold` | 合并相似度阈值 (0-100) / Merge similarity | `75` |
+| `matching.keyword_evidence_threshold` | 直接文本证据门槛 / Lexical evidence gate | `0.72` |
+| `matching.semantic_evidence_threshold` | 语义余弦证据门槛 / Semantic evidence gate | `0.72` |
 
 敏感配置用环境变量：
 Sensitive config via env vars:
@@ -436,6 +438,8 @@ Sensitive config via env vars:
 - `OMBRE_TRANSPORT` — 覆盖传输方式
 - `OMBRE_BUCKETS_DIR` — 覆盖存储路径
 - `OMBRE_DASHBOARD_PASSWORD` — Dashboard 访问密码（可选，见下）
+- `OMBRE_MCP_TOKEN` — 远程 MCP Bearer token（留空时复用 `OMBRE_HOME_READ_TOKEN`）
+- `OMBRE_MCP_REQUIRE_AUTH` — 是否强制远程 MCP 鉴权（有 token 时默认开启）
 
 ## Dashboard 认证 / Dashboard Auth
 

@@ -22,6 +22,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from curator import duplicate_similarity
 from utils import count_tokens_approx, now_iso
 
 logger = logging.getLogger("ombre_brain.import")
@@ -637,15 +638,31 @@ class ImportEngine:
         arousal = item.get("arousal", 0.3)
         name = item.get("name", "")
 
+        collision = None
+        collision_score = 0.0
         try:
-            existing = await self.bucket_mgr.search(content, limit=1, domain_filter=domain or None)
-        except Exception:
-            existing = []
+            duplicate_item = {"content": content, "title": name, "tags": tags}
+            for candidate in await self.bucket_mgr.list_all(include_archive=False):
+                meta = candidate.get("metadata", {})
+                if (
+                    str(meta.get("memory_status") or "confirmed") != "confirmed"
+                    or meta.get("type") in ("permanent", "feel")
+                    or meta.get("pinned")
+                    or meta.get("protected")
+                ):
+                    continue
+                score = duplicate_similarity(duplicate_item, candidate)
+                if score > collision_score:
+                    collision, collision_score = candidate, score
+        except Exception as exc:
+            logger.warning(f"Duplicate check failed during import: {exc}")
 
-        merge_threshold = self.config.get("merge_threshold", 75)
+        # Import uses direct content/title/tag similarity only.  Recall-time
+        # freshness, emotion and importance must never decide a destructive merge.
+        merge_threshold = max(float(self.config.get("merge_threshold", 75)), 84.0)
 
-        if existing and existing[0].get("score", 0) > merge_threshold:
-            bucket = existing[0]
+        if collision and collision_score >= merge_threshold:
+            bucket = collision
             if not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
                 try:
                     merged = await self.dehydrator.merge(bucket["content"], content)

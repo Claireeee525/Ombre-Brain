@@ -111,8 +111,8 @@ hold(content="用户拿到实习 offer，情绪激动", importance=7)
    - 失败时降级：`{"domain": ["未分类"], "valence": 0.5, "arousal": 0.3, "tags": [], "suggested_name": ""}`
 6. 合并 `auto_tags + extra_tags` 去重
 7. **合并检测**：`_merge_or_create(content, tags, importance=7, domain, valence, arousal, name)`
-   - `bucket_mgr.search(content, limit=1, domain_filter=domain)` — 搜索最相似的桶
-   - 若最高分 > `config["merge_threshold"]`（默认 75）且该桶非 pinned/protected：
+   - 直接比较现有桶与新内容的正文、标题、标签；不使用召回排名、新鲜度、情绪或重要度
+   - 若直接重复相似度 ≥ `max(config["merge_threshold"], 84)` 且该桶非 permanent/feel/pinned/protected：
      - `dehydrator.merge(old_content, new_content)` → `_api_merge()` → LLM 融合
      - `bucket_mgr.update(bucket_id, content=merged, tags=union, importance=max, domain=union, valence=avg, arousal=avg)`
      - `embedding_engine.generate_and_store(bucket_id, merged_content)` 更新向量
@@ -479,10 +479,10 @@ Claude 决策: hold / grow / 自动
                           ▼
                     _merge_or_create()
                           │
-                    bucket_mgr.search(content, limit=1, domain_filter)
+                    duplicate_similarity(content/title/tags)
                           │
                     ┌─────┴─────────────────────────┐
-                    │ score > merge_threshold (75)?  │
+                    │ direct score ≥ max(threshold,84)?│
                     │                                │
                    YES                               NO
                     │                                │
