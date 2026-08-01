@@ -68,7 +68,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.4.2"
+OMBRE_VERSION = "1.4.3"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -1353,15 +1353,29 @@ async def curate(payload: str) -> str:
 
 @mcp.tool()
 async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
-    """memory_review 候选记忆审核 review memory candidate。confirm 只提升候选状态；reject/supersede 保留原文并沉底，永不删除或改写证据。"""
+    """memory_review 记忆审核 同步移除 restore review memory。候选记忆审核可 confirm；candidate/confirmed 可 reject 或 supersede；restore 可恢复。所有移除只改变有效状态，保留原文证据。"""
     decision = str(decision or "confirm").strip().lower()
-    if decision not in {"confirm", "reject", "supersede"}:
-        return _json_lib.dumps({"ok": False, "error": "decision 只能是 confirm / reject / supersede"}, ensure_ascii=False)
+    if decision not in {"confirm", "reject", "supersede", "restore"}:
+        return _json_lib.dumps({"ok": False, "error": "decision 只能是 confirm / reject / supersede / restore"}, ensure_ascii=False)
     bucket = await bucket_mgr.get(str(bucket_id or "").strip())
     if not bucket:
-        return _json_lib.dumps({"ok": False, "error": "找不到这条候选记忆"}, ensure_ascii=False)
-    current_status = str(bucket.get("metadata", {}).get("memory_status") or "confirmed")
-    target_status = "confirmed" if decision == "confirm" else "rejected"
+        return _json_lib.dumps({"ok": False, "error": "找不到这条记忆"}, ensure_ascii=False)
+    metadata = bucket.get("metadata", {})
+    current_status = str(metadata.get("memory_status") or "confirmed")
+
+    if decision == "restore":
+        if current_status != "rejected":
+            return _json_lib.dumps({
+                "ok": True,
+                "bucket_id": bucket["id"],
+                "memory_status": current_status,
+                "duplicate": True,
+            }, ensure_ascii=False)
+        previous_status = str(metadata.get("status_before_reject") or "confirmed")
+        target_status = previous_status if previous_status in {"candidate", "confirmed"} else "confirmed"
+    else:
+        target_status = "confirmed" if decision == "confirm" else "rejected"
+
     if current_status == target_status:
         return _json_lib.dumps({
             "ok": True,
@@ -1369,16 +1383,26 @@ async def memory_review(bucket_id: str, decision: str = "confirm") -> str:
             "memory_status": current_status,
             "duplicate": True,
         }, ensure_ascii=False)
-    if current_status != "candidate":
+
+    if decision == "confirm" and current_status != "candidate":
         return _json_lib.dumps({"ok": False, "error": "只有候选记忆可以审核"}, ensure_ascii=False)
+    if decision in {"reject", "supersede"} and current_status not in {"candidate", "confirmed"}:
+        return _json_lib.dumps({"ok": False, "error": "这条记忆当前不能移除"}, ensure_ascii=False)
+    if decision in {"reject", "supersede"} and (metadata.get("pinned") or metadata.get("protected")):
+        return _json_lib.dumps({"ok": False, "error": "钉选或受保护的核心记忆不能直接移除"}, ensure_ascii=False)
+
     now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     updates = {
-        "memory_status": "confirmed" if decision == "confirm" else "rejected",
+        "memory_status": target_status,
         "reviewed_at": now,
         "review_decision": decision,
     }
-    if decision != "confirm":
+    if decision in {"reject", "supersede"}:
         updates["resolved"] = True
+        updates["status_before_reject"] = current_status
+    elif decision == "restore":
+        updates["resolved"] = False
+        updates["restored_at"] = now
     await bucket_mgr.update(bucket["id"], **updates)
     return _json_lib.dumps({"ok": True, "bucket_id": bucket["id"], **updates}, ensure_ascii=False)
 
@@ -2394,13 +2418,13 @@ def _herbier_memory_kind(bucket: dict) -> str:
 
 
 @mcp.tool()
-async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = False) -> str:
-    """herbier 记忆藏页 目录 browse catalogue memory。【小家 Herbier 专用，只读】分页返回 Ombre 的真实记忆正文、审核状态和来源署名；不会触发 recall 计数，也不会复制或修改记忆。limit 默认100，范围20~200；offset 从0开始。"""
+async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = False, include_rejected: bool = False) -> str:
+    """herbier 记忆藏页 目录 browse catalogue memory。【小家 Herbier 专用，只读】分页返回 Ombre 的真实记忆正文、审核状态和来源署名；不会触发 recall 计数，也不会复制或修改记忆。limit 默认100，范围20~200；offset 从0开始；include_rejected 仅供小家回收区读取已移除底稿。"""
     try:
         limit = max(20, min(int(limit or 100), 200))
         offset = max(0, int(offset or 0))
         stored = await bucket_mgr.list_all(include_archive=include_archive)
-        visible = [
+        visible = stored if include_rejected else [
             bucket for bucket in stored
             if str(bucket.get("metadata", {}).get("memory_status") or "confirmed") != "rejected"
         ]
