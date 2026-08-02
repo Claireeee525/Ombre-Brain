@@ -79,7 +79,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.6.0"
+OMBRE_VERSION = "1.7.0"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -658,6 +658,7 @@ async def _merge_or_create(
     arousal: float,
     name: str = "",
     extra_metadata: dict | None = None,
+    allow_merge: bool = True,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -667,22 +668,23 @@ async def _merge_or_create(
     """
     collision = None
     collision_score = 0.0
-    try:
-        item = {"content": content, "title": name, "tags": tags}
-        for candidate in await bucket_mgr.list_all(include_archive=False):
-            meta = candidate.get("metadata", {})
-            if (
-                str(meta.get("memory_status") or "confirmed") != "confirmed"
-                or meta.get("type") in ("permanent", "feel")
-                or meta.get("pinned")
-                or meta.get("protected")
-            ):
-                continue
-            score = duplicate_similarity(item, candidate)
-            if score > collision_score:
-                collision, collision_score = candidate, score
-    except Exception as e:
-        logger.warning(f"Duplicate check failed, creating new / 重复检查失败，新建: {e}")
+    if allow_merge:
+        try:
+            item = {"content": content, "title": name, "tags": tags}
+            for candidate in await bucket_mgr.list_all(include_archive=False):
+                meta = candidate.get("metadata", {})
+                if (
+                    str(meta.get("memory_status") or "confirmed") != "confirmed"
+                    or meta.get("type") in ("permanent", "feel")
+                    or meta.get("pinned")
+                    or meta.get("protected")
+                ):
+                    continue
+                score = duplicate_similarity(item, candidate)
+                if score > collision_score:
+                    collision, collision_score = candidate, score
+        except Exception as e:
+            logger.warning(f"Duplicate check failed, creating new / 重复检查失败，新建: {e}")
 
     # merge_threshold remains configurable, but direct meaning similarity must
     # also meet the curator's conservative duplicate floor.  Recall ranking,
@@ -1561,6 +1563,75 @@ async def memory_review(
 
 
 @mcp.tool()
+async def source_read(
+    bucket_id: str = "",
+    source_evidence_id: str = "",
+    message_id: str = "",
+    max_chars: int = 12000,
+) -> str:
+    """source_read 原文证据 查原话 exact evidence source。只接受原文证据层或带 source_evidence_id 的记忆；按指定来源读取完整聊天、日期、说话人或指定行，不参与普通召回。"""
+    requested_id = str(source_evidence_id or bucket_id or "").strip()
+    if not requested_id:
+        return _json_lib.dumps({"ok": False, "error": "请提供 bucket_id 或 source_evidence_id"}, ensure_ascii=False)
+    bucket = await bucket_mgr.get(requested_id)
+    if not bucket:
+        return _json_lib.dumps({"ok": False, "error": "找不到原文证据或关联记忆"}, ensure_ascii=False)
+
+    meta = normalize_layer_metadata(bucket.get("metadata", {}), bucket.get("content", ""))
+    if meta.get("memory_layer") != "evidence":
+        linked_id = str(meta.get("source_evidence_id") or "").strip()
+        if not linked_id:
+            return _json_lib.dumps({
+                "ok": False,
+                "error": "这条记忆没有绑定原文证据，不能把摘要当原话读取",
+                "bucket_id": requested_id,
+            }, ensure_ascii=False)
+        bucket = await bucket_mgr.get(linked_id)
+        if not bucket:
+            return _json_lib.dumps({"ok": False, "error": "关联的原文证据已找不到"}, ensure_ascii=False)
+        meta = normalize_layer_metadata(bucket.get("metadata", {}), bucket.get("content", ""))
+
+    content = strip_wikilinks(bucket.get("content", ""))
+    selected = content
+    requested_message = str(message_id or "").strip()
+    if requested_message.startswith("line:"):
+        try:
+            line_number = max(1, int(requested_message.split(":", 1)[1]))
+            lines = content.splitlines()
+            selected = lines[line_number - 1] if line_number <= len(lines) else ""
+        except (TypeError, ValueError):
+            selected = ""
+    max_chars = max(500, min(int(max_chars or 12000), 50000))
+    return _json_lib.dumps({
+        "ok": True,
+        "read_only": True,
+        "source_bucket_id": bucket["id"],
+        "requested_bucket_id": requested_id,
+        "title": meta.get("name", bucket["id"]),
+        "memory_layer": "evidence",
+        "recall_policy": "exact_only",
+        "source_kind": meta.get("source_kind", "original_evidence"),
+        "source_surface": meta.get("source_surface", ""),
+        "source_session_id": meta.get("source_session_id", ""),
+        "evidence_speakers": meta.get("evidence_speakers", []),
+        "evidence_ranges": meta.get("evidence_ranges", []),
+        "message_id": requested_message,
+        "content": selected[:max_chars],
+        "truncated": len(selected) > max_chars,
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
+@mcp.tool()
+async def embedding_queue(retry: bool = False, limit: int = 20) -> str:
+    """embedding_queue 向量重试队列 embedding retry queue。读取待重试的向量化任务；retry=true时只重试到期任务，不改记忆正文和层级。"""
+    try:
+        result = await embedding_engine.retry_pending(limit) if retry else embedding_engine.queue_status()
+        return _json_lib.dumps({"ok": True, "read_only": not retry, **result}, ensure_ascii=False)
+    except Exception as exc:
+        return _json_lib.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
 async def review_queue(limit: int = 50) -> str:
     """review_queue 待审候选 审阅工作台 candidate review queue。【自动整理内容专用】只返回候选记忆、原文证据引用和来源，不参与正常召回；不会修改、删除或合并。"""
     try:
@@ -1583,6 +1654,7 @@ async def review_queue(limit: int = 50) -> str:
                 "source_kind": meta.get("source_kind", "legacy"),
                 "source_surface": meta.get("source_surface", ""),
                 "source_session_id": meta.get("source_session_id", ""),
+                "source_evidence_id": meta.get("source_evidence_id", ""),
                 "source_message_ids": meta.get("source_message_ids", []),
                 "evidence_quotes": meta.get("evidence_quotes", []),
                 "operation": meta.get("operation", "add"),
@@ -1708,13 +1780,120 @@ async def memory_stance(bucket_id: str, actor: str, stance: str, note: str = "")
 # Tool 3: grow — Grow, fragments become memories
 # 工具 3：grow — 生长，一天的碎片长成记忆
 # =============================================================
+def _evidence_digest(content: str) -> str:
+    return hashlib.sha256((content or "").strip().encode("utf-8")).hexdigest()[:32]
+
+
+def _evidence_speakers(content: str) -> list[str]:
+    labels = re.findall(r"(?:^|\n)\s*([^：:\n]{1,40})\s*[：:]", content or "")
+    ignored = {"时间", "日期", "标题"}
+    return list(dict.fromkeys(label.strip() for label in labels if label.strip() not in ignored))[:12]
+
+
+def _evidence_ranges(content: str) -> list[dict]:
+    ranges = []
+    for line_number, line in enumerate((content or "").splitlines(), start=1):
+        match = re.match(r"\s*([^：:\n]{1,40})\s*[：:]", line)
+        if not match or match.group(1).strip() in {"时间", "日期", "标题"}:
+            continue
+        ranges.append({
+            "message_id": f"line:{line_number}",
+            "speaker": match.group(1).strip(),
+            "start": line_number,
+            "end": line_number,
+        })
+    return ranges[:24]
+
+
+async def _store_source_evidence(
+    content: str,
+    *,
+    source_surface: str = "",
+    source_session_id: str = "",
+) -> tuple[str, bool]:
+    """Persist one recoverable raw source bucket before any auto-summary is made."""
+    digest = _evidence_digest(content)
+    for bucket in await bucket_mgr.list_all(include_archive=True):
+        meta = bucket.get("metadata", {})
+        if (
+            meta.get("source_kind") == "original_evidence"
+            and str(meta.get("evidence_digest") or meta.get("source_fingerprint") or "") == digest
+        ):
+            return bucket["id"], False
+
+    evidence_id = await bucket_mgr.create(
+        content=content.strip(),
+        tags=["原文证据", "不可自动召回"],
+        importance=5,
+        domain=["原文证据"],
+        name=f"原文证据 {time.strftime('%Y-%m-%d %H:%M')}",
+        extra_metadata={
+            "memory_status": "confirmed",
+            "memory_layer": "evidence",
+            "recall_policy": RECALL_POLICIES["evidence"],
+            "source_kind": "original_evidence",
+            "source_surface": source_surface.strip() or "grow",
+            "source_session_id": source_session_id.strip(),
+            "source_fingerprint": digest,
+            "evidence_digest": digest,
+            "evidence_speakers": _evidence_speakers(content),
+            "evidence_ranges": _evidence_ranges(content),
+            "curated_by": "source_capture",
+            "memory_scope": "home_shared",
+        },
+    )
+    return evidence_id, True
+
+
+def _auto_candidate_metadata(
+    *,
+    evidence_id: str,
+    content: str,
+    source_surface: str,
+    source_session_id: str,
+    title: str = "",
+) -> dict:
+    fingerprint = hashlib.sha256(
+        f"{evidence_id}\n{title}\n{content}".encode("utf-8")
+    ).hexdigest()[:32]
+    return {
+        "memory_status": "candidate",
+        **layer_fields("candidate"),
+        "source_kind": "grow_auto",
+        "source_evidence_id": evidence_id,
+        "source_fingerprint": fingerprint,
+        "source_surface": source_surface.strip() or "grow",
+        "source_session_id": source_session_id.strip(),
+        "source_message_ids": [f"evidence:{evidence_id}"],
+        "evidence_quotes": [{
+            "message_id": f"evidence:{evidence_id}",
+            "quote": content.strip()[:320],
+        }],
+        "confidence": 0.68,
+        "curated_by": "grow_auto",
+        "rationale": "由 grow 自动整理，先放待审候选，不进入正常召回",
+        "memory_scope": "home_shared",
+        "operation": "add",
+    }
+
+
 @mcp.tool()
-async def grow(content: str) -> str:
-    """grow 日记归档 拆分 diary archive memory。【每次长对话（包括做爱之后）收尾时，把这一整段经历原文丢进来归档——这是你写日记的方式，一天至少一次】日记归档,自动拆分为多桶。短内容(<30字)走快速路径。"""
+async def grow(
+    content: str,
+    source_surface: str = "",
+    source_session_id: str = "",
+) -> str:
+    """grow 日记归档 拆分 diary archive memory。【自动整理入口】先保存完整原文证据，再把摘要放进待审候选；不会自动并入有效记忆。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。"""
     await decay_engine.ensure_started()
 
     if not content or not content.strip():
         return "内容为空，无法整理。"
+
+    evidence_id, evidence_created = await _store_source_evidence(
+        content,
+        source_surface=source_surface,
+        source_session_id=source_session_id,
+    )
 
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
@@ -1739,9 +1918,16 @@ async def grow(content: str) -> str:
             valence=analysis.get("valence", 0.5),
             arousal=analysis.get("arousal", 0.3),
             name=analysis.get("suggested_name", ""),
+            extra_metadata=_auto_candidate_metadata(
+                evidence_id=evidence_id,
+                content=content.strip(),
+                source_surface=source_surface,
+                source_session_id=source_session_id,
+                title=analysis.get("suggested_name", ""),
+            ),
+            allow_merge=False,
         )
-        action = "合并" if is_merged else "新建"
-        return f"{action} → {result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
+        return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
 
     # --- Step 1: let API split and organize / 让 API 拆分整理 ---
     try:
@@ -1769,13 +1955,21 @@ async def grow(content: str) -> str:
                 valence=item.get("valence", 0.5),
                 arousal=item.get("arousal", 0.3),
                 name=item.get("name", ""),
+                extra_metadata=_auto_candidate_metadata(
+                    evidence_id=evidence_id,
+                    content=item["content"],
+                    source_surface=source_surface,
+                    source_session_id=source_session_id,
+                    title=item.get("name", ""),
+                ),
+                allow_merge=False,
             )
 
             if is_merged:
-                results.append(f"📎{result_name}")
+                results.append(f"📎候选·{result_name}")
                 merged += 1
             else:
-                results.append(f"📝{item.get('name', result_name)}")
+                results.append(f"📝候选·{item.get('name', result_name)}")
                 created += 1
         except Exception as e:
             logger.warning(
@@ -1784,7 +1978,7 @@ async def grow(content: str) -> str:
             )
             results.append(f"⚠️{item.get('name', '?')}")
 
-    return f"{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
+    return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
 
 
 # =============================================================
@@ -2349,6 +2543,16 @@ async def _run_night_ritual(now=None):
                 content=content, name=f"日记 {today}",
                 tags=["日记", "夜梦"], domain=["日记"],
                 importance=6, valence=0.6, arousal=0.35,
+                extra_metadata={
+                    "memory_status": "candidate",
+                    **layer_fields("candidate"),
+                    "source_kind": "night_diary",
+                    "source_surface": "Ombre 夜间整理",
+                    "curated_by": "night_ritual",
+                    "confidence": 0.65,
+                    "rationale": "夜间自动生成的日记与梦，不直接作为事实召回",
+                    "memory_scope": "home_shared",
+                },
             )
         except Exception as e:
             logger.warning(f"Night ritual diary write failed: {e}")
@@ -2704,11 +2908,20 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
             ),
             reverse=True,
         )
-        lens_counts = {"all": len(visible), "candidate": 0, "lasting": 0, "event": 0, "state": 0, "dream": 0}
+        lens_counts = {
+            "all": len(visible), "candidate": 0, "lasting": 0, "event": 0,
+            "state": 0, "dream": 0, "evidence": 0, "active": 0, "short_term": 0,
+        }
         for bucket in visible:
+            layer_meta = normalize_layer_metadata(
+                bucket.get("metadata", {}), bucket.get("content", "")
+            )
+            layer = layer_meta["memory_layer"]
             status = str(bucket.get("metadata", {}).get("memory_status") or "confirmed")
-            if status == "candidate":
+            if layer == "candidate" or status == "candidate":
                 lens_counts["candidate"] += 1
+            elif layer in lens_counts:
+                lens_counts[layer] += 1
             kind = _herbier_memory_kind(bucket)
             lens_counts[kind] += 1
         pages = []
@@ -2741,8 +2954,11 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
                 "source_surface": meta.get("source_surface", ""),
                 "source_kind": meta.get("source_kind", "legacy"),
                 "source_session_id": meta.get("source_session_id", ""),
+                "source_evidence_id": meta.get("source_evidence_id", ""),
                 "source_message_ids": meta.get("source_message_ids", []),
                 "evidence_quotes": meta.get("evidence_quotes", []),
+                "evidence_ranges": meta.get("evidence_ranges", []),
+                "evidence_digest": meta.get("evidence_digest", ""),
                 "source_fingerprint": meta.get("source_fingerprint", ""),
                 "valid_from": meta.get("valid_from", ""),
                 "valid_to": meta.get("valid_to", ""),

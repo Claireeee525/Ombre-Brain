@@ -10,6 +10,8 @@ import server
 
 EXPECTED_TOOL_ALIASES = {
     "breath": ("记忆检索", "recall", "memory"),
+    "source_read": ("原文证据", "exact", "source"),
+    "embedding_queue": ("向量重试", "embedding", "queue"),
     "hold": ("保存", "remember", "memory"),
     "curate": ("记忆整理", "organize", "memory"),
     "memory_review": ("候选记忆审核", "review", "memory"),

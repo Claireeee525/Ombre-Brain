@@ -29,6 +29,7 @@ import os
 import math
 import logging
 import shutil
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -167,6 +168,7 @@ class BucketManager:
 
         allowed_extra = {
             "source_kind", "source_session_id", "source_message_ids", "source_fingerprint",
+            "source_evidence_id", "evidence_digest", "evidence_ranges",
             "memory_status", "confidence", "valid_from", "valid_to", "supersedes",
             "superseded_by", "operation", "rationale", "reviewed_at", "review_decision",
             "batch_id", "memory_scope", "signed_by", "evidence_speakers", "participants",
@@ -187,6 +189,17 @@ class BucketManager:
                     for item in (value or [])
                     if isinstance(item, dict) and item.get("message_id") and item.get("quote")
                 ][:12]
+            elif key == "evidence_ranges":
+                metadata[key] = [
+                    {
+                        "message_id": str(item.get("message_id") or "")[:100],
+                        "speaker": str(item.get("speaker") or "")[:60],
+                        "start": max(0, int(item.get("start") or 0)),
+                        "end": max(0, int(item.get("end") or 0)),
+                    }
+                    for item in (value or [])
+                    if isinstance(item, dict) and (item.get("message_id") or item.get("speaker"))
+                ][:24]
             elif key == "confidence":
                 metadata[key] = max(0.0, min(1.0, float(value)))
             elif isinstance(value, (str, int, float, bool)):
@@ -331,6 +344,20 @@ class BucketManager:
         for key in ("memory_layer", "recall_policy", "expires_at", "source_bucket"):
             if key in kwargs:
                 post[key] = str(kwargs[key])[:180]
+        for key in ("source_evidence_id", "evidence_digest"):
+            if key in kwargs:
+                post[key] = str(kwargs[key])[:180]
+        if "evidence_ranges" in kwargs:
+            post["evidence_ranges"] = [
+                {
+                    "message_id": str(item.get("message_id") or "")[:100],
+                    "speaker": str(item.get("speaker") or "")[:60],
+                    "start": max(0, int(item.get("start") or 0)),
+                    "end": max(0, int(item.get("end") or 0)),
+                }
+                for item in (kwargs["evidence_ranges"] or [])
+                if isinstance(item, dict) and (item.get("message_id") or item.get("speaker"))
+            ][:24]
         if "confidence" in kwargs:
             post["confidence"] = max(0.0, min(1.0, float(kwargs["confidence"])))
         for key in ("signed_by", "evidence_speakers", "participants", "source_message_ids"):
@@ -539,8 +566,7 @@ class BucketManager:
                 mode=recall_mode,
                 include_candidates=include_candidates,
             )
-        ]
-
+                ]
         if not all_buckets:
             return []
 
@@ -657,6 +683,26 @@ class BucketManager:
         normalized_fields = [" ".join(value.casefold().split()) for value in fields if value]
         if any(needle in value for value in normalized_fields):
             return 1.0
+        # Chinese queries are not whitespace-tokenized.  Use phrase + character
+        # bigram evidence before fuzzy matching, so names and short project
+        # terms do not depend on an embedding provider being available.
+        chinese_parts = re.findall(r"[\u4e00-\u9fff]+", needle)
+        if chinese_parts:
+            best = 0.0
+            for value in normalized_fields:
+                matched = 0
+                total = 0
+                for part in chinese_parts:
+                    total += len(part)
+                    if part in value:
+                        matched += len(part)
+                        continue
+                    bigrams = [part[i:i + 2] for i in range(max(0, len(part) - 1))]
+                    matched += sum(2 for gram in bigrams if gram and gram in value)
+                if total:
+                    best = max(best, min(1.0, matched / total))
+            if best >= 0.5:
+                return best
         # Fuzzy partial matching on one or two characters is effectively noise:
         # it can score an unrelated long memory as a hit.  Short queries must
         # therefore be literal; longer queries may use conservative fuzziness.

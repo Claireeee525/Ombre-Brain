@@ -16,6 +16,7 @@ import json
 import math
 import sqlite3
 import logging
+from datetime import datetime, timedelta, timezone
 
 from openai import AsyncOpenAI
 
@@ -74,6 +75,19 @@ class EmbeddingEngine:
                 updated_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_jobs (
+                bucket_id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                next_retry_at TEXT NOT NULL,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         conn.commit()
         conn.close()
 
@@ -89,8 +103,10 @@ class EmbeddingEngine:
         try:
             embedding = await self._generate_embedding(content)
             if not embedding:
+                self._enqueue_retry(bucket_id, content, "empty embedding response")
                 return False
             self._store_embedding(bucket_id, embedding)
+            self._clear_retry(bucket_id)
             if self.on_stored:
                 try:
                     await self.on_stored(bucket_id, embedding, content)
@@ -99,7 +115,96 @@ class EmbeddingEngine:
             return True
         except Exception as e:
             logger.warning(f"Embedding generation failed for {bucket_id}: {e}")
+            self._enqueue_retry(bucket_id, content, str(e))
             return False
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _enqueue_retry(self, bucket_id: str, content: str, error: str):
+        """Persist a failed job so transient provider failures do not lose indexing."""
+        if not bucket_id or not content or not content.strip():
+            return
+        from utils import now_iso
+        content = content[:20000]
+        content_hash = __import__("hashlib").sha256(content.encode("utf-8")).hexdigest()[:32]
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT attempts FROM embedding_jobs WHERE bucket_id = ?", (bucket_id,)
+        ).fetchone()
+        attempts = int(row[0] if row else 0)
+        delay = min(3600, 30 * (2 ** min(attempts, 6)))
+        now = self._now()
+        next_retry = now + timedelta(seconds=delay)
+        conn.execute(
+            """INSERT INTO embedding_jobs
+               (bucket_id, content, content_hash, attempts, status, next_retry_at, last_error, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+               ON CONFLICT(bucket_id) DO UPDATE SET
+                 content=excluded.content,
+                 content_hash=excluded.content_hash,
+                 attempts=excluded.attempts,
+                 status='pending',
+                 next_retry_at=excluded.next_retry_at,
+                 last_error=excluded.last_error,
+                 updated_at=excluded.updated_at""",
+            (bucket_id, content, content_hash, attempts + 1, next_retry.isoformat(), str(error)[:500], now.isoformat(), now.isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+    def _clear_retry(self, bucket_id: str):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DELETE FROM embedding_jobs WHERE bucket_id = ?", (bucket_id,))
+        conn.commit()
+        conn.close()
+
+    def queue_status(self) -> dict:
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(attempts), 0) FROM embedding_jobs WHERE status = 'pending'"
+        ).fetchone()
+        conn.close()
+        return {
+            "enabled": bool(self.enabled),
+            "pending": int(row[0] or 0),
+            "attempts": int(row[1] or 0),
+        }
+
+    async def retry_pending(self, limit: int = 20) -> dict:
+        """Retry due jobs and keep failed rows for the next backoff window."""
+        if not self.enabled:
+            return {**self.queue_status(), "retried": 0, "succeeded": 0, "failed": 0}
+        now = self._now().isoformat()
+        limit = max(1, min(int(limit or 20), 100))
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            """SELECT bucket_id, content FROM embedding_jobs
+               WHERE status = 'pending' AND next_retry_at <= ?
+               ORDER BY next_retry_at ASC LIMIT ?""",
+            (now, limit),
+        ).fetchall()
+        conn.close()
+        succeeded = 0
+        failed = 0
+        for bucket_id, content in rows:
+            try:
+                embedding = await self._generate_embedding(content)
+                if not embedding:
+                    raise RuntimeError("empty embedding response")
+                self._store_embedding(bucket_id, embedding)
+                self._clear_retry(bucket_id)
+                if self.on_stored:
+                    try:
+                        await self.on_stored(bucket_id, embedding, content)
+                    except Exception as hook_err:
+                        logger.warning(f"on_stored hook failed for retry {bucket_id}: {hook_err}")
+                succeeded += 1
+            except Exception as exc:
+                self._enqueue_retry(bucket_id, content, str(exc))
+                failed += 1
+        return {**self.queue_status(), "retried": len(rows), "succeeded": succeeded, "failed": failed}
 
     async def _generate_embedding(self, text: str) -> list[float]:
         """Call API to generate embedding vector."""

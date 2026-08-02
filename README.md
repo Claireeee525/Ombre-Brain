@@ -314,11 +314,13 @@ breath(query="今天很累")
 |-----------|-------------|
 | `breath` | 浮现或检索记忆。无参数=推送未解决记忆；有参数=关键词+向量语义双通道检索。支持 domain/valence/arousal 过滤 / Surface or search memories. No args = surface unresolved; with query = keyword + vector dual-channel search. Supports domain/valence/arousal filters |
 | `hold` | 存储单条记忆，自动打标+合并相似桶+生成 embedding。`feel=True` 写模型自己的感受 / Store a single memory with auto-tagging, merging, and embedding. `feel=True` for model's own reflections |
-| `grow` | 日记归档，自动拆分长内容为多个记忆桶，每个桶自动生成 embedding / Diary digest, auto-split into multiple buckets with embeddings |
+| `grow` | 自动整理入口：先保存一条原文证据桶，再把摘要拆成待审候选；不会自动并入有效记忆 / Auto-organize: persist one raw evidence bucket first, then create review candidates without merging into active memory |
 | `trace` | 修改元数据、标记已解决；`delete=True` 只做可恢复归档，不物理删除 / Modify metadata, mark resolved; `delete=True` soft-archives and keeps evidence recoverable |
 | `pulse` | 系统状态 + 所有记忆桶列表 / System status + bucket listing |
 | `dream` | 对话开头自省消化——读最近记忆，有沉淀写 feel，能放下就 resolve / Self-reflection at conversation start |
 | `review_queue` | 只读候选审核队列：自动整理内容、来源和原文引用，不参与正常召回 / Read-only candidate review queue; candidates never enter normal recall |
+| `source_read` | 只按证据 ID/关联记忆读取原文、日期、说话人或指定行；摘要不能冒充原话 / Exact source-only read by evidence ID or linked memory |
+| `embedding_queue` | 读取或重试失败的 embedding 任务；失败不会丢失记忆正文 / Inspect or retry durable embedding jobs without changing memory content |
 | `handoff` | 只读短期状态/项目线头，按 `expires_at` 输出换窗交接卡 / Read-only short-term handoff with expiry |
 
 ### 六层记忆边界 / Six Memory Layers
@@ -373,9 +375,9 @@ export OMBRE_API_KEY="your-api-key"
 Supports any OpenAI-compatible API. Just change `base_url` and `model` in `config.yaml`.
 
 > **💡 向量化检索（Embedding）**
-> Ombre Brain 内置双通道检索：关键词匹配 + 向量语义搜索。每次 `hold`/`grow` 存入记忆时自动生成 embedding 并存入 `embeddings.db`（SQLite）。
+> Ombre Brain 内置双通道检索：中文短语/关键词匹配 + 向量语义搜索。`hold` 的有效记忆和候选会尝试生成 embedding；原文证据保持 exact-only，不进入普通向量召回。失败任务会写入 `embeddings.db` 的重试队列。
 > 推荐：**Google AI Studio 的 `gemini-embedding-001`**（免费，1500 次/天，3072 维向量）。在 `config.yaml` 的 `embedding` 部分配置。
-> 不配置 embedding 也能用，系统会降级到纯 fuzzy matching 模式。
+> 不配置 embedding 也能用，系统会降级到中文短语 + fuzzy matching 模式。
 >
 > **已有存量桶需要补生成 embedding**：运行 `backfill_embeddings.py`：
 > ```bash
