@@ -106,6 +106,17 @@ class MemoryArchivist:
             return None
 
     def _save_job(self, job: dict[str, Any]) -> None:
+        # A running worker saves after every record. Preserve a pause request
+        # that may have landed between that record's read and write so the
+        # worker cannot accidentally overwrite the user's stop signal.
+        existing = self._load_job(str(job.get("id") or ""))
+        if (
+            job.get("status") == "running"
+            and existing
+            and existing.get("pause_requested")
+        ):
+            job["pause_requested"] = True
+            job["pause_reason"] = existing.get("pause_reason") or "用户暂停"
         job["updated_at"] = _now_iso()
         _atomic_json(self._job_path(job["id"]), job)
 

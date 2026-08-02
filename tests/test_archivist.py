@@ -192,3 +192,27 @@ async def test_archivist_uses_pro_only_to_recheck_flash_boundaries(tmp_path):
     assert finished["archived"] == 1
     assert [call["model"] for call in completions.calls] == ["deepseek-v4-flash", "deepseek-v4-pro"]
     assert finished["usage"]["review_requests"] == 1
+
+
+def test_worker_save_cannot_overwrite_a_concurrent_pause_request(tmp_path):
+    manager = FakeBucketManager([])
+    runner = MemoryArchivist({"buckets_dir": str(tmp_path), "archivist": {}}, manager, FakeDehydrator([]))
+    job = {
+        "id": "pause-race",
+        "status": "running",
+        "pause_requested": False,
+        "pause_reason": "",
+    }
+    runner._save_job(job)
+
+    paused = runner._load_job(job["id"])
+    paused["pause_requested"] = True
+    paused["pause_reason"] = "用户暂停"
+    runner._save_job(paused)
+
+    stale_worker_copy = {**job, "processed": 1}
+    runner._save_job(stale_worker_copy)
+
+    saved = runner._load_job(job["id"])
+    assert saved["pause_requested"] is True
+    assert saved["pause_reason"] == "用户暂停"
