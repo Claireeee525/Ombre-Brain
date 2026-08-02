@@ -304,12 +304,13 @@ class MemoryArchivist:
         failures = []
         for action in reversed(job.get("actions", [])):
             bucket_id = str(action.get("bucket_id") or "")
+            storage_id = str(action.get("storage_id") or bucket_id)
             if not action.get("changed") or not bucket_id or bucket_id in restored:
                 continue
             try:
                 if action.get("action") == "archive":
                     raw = await review_handler(
-                        bucket_id=bucket_id,
+                        bucket_id=storage_id,
                         decision="restore",
                         actor="Ombre AI Archivist",
                         reason=f"restore_archivist_job:{job_id}",
@@ -321,7 +322,7 @@ class MemoryArchivist:
                 elif action.get("action") == "evidence_only":
                     previous = action.get("previous") or {}
                     await self.bucket_manager.update(
-                        bucket_id,
+                        storage_id,
                         memory_layer=previous.get("memory_layer") or "active",
                         recall_policy=previous.get("recall_policy") or RECALL_POLICIES["active"],
                     )
@@ -342,6 +343,20 @@ class MemoryArchivist:
         if not job:
             raise RuntimeError("找不到这批 AI 归档任务")
         return job
+
+    async def _resolve_bucket(self, bucket: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        """Resolve imported records whose frontmatter id differs from the filename."""
+        logical_id = str(bucket.get("id") or "")
+        latest = await self.bucket_manager.get(logical_id)
+        if latest:
+            return logical_id, latest
+        path = str(bucket.get("path") or "")
+        storage_id = Path(path).stem if path else ""
+        if storage_id and storage_id != logical_id:
+            latest = await self.bucket_manager.get(storage_id)
+            if latest:
+                return storage_id, latest
+        return logical_id, None
 
     def _is_active(self, bucket: dict[str, Any]) -> bool:
         metadata = bucket.get("metadata", {})
@@ -643,9 +658,10 @@ class MemoryArchivist:
             },
         }
         try:
-            latest = await self.bucket_manager.get(bucket_id)
+            storage_id, latest = await self._resolve_bucket(bucket)
             if not latest:
                 raise RuntimeError("执行前记忆已不存在")
+            receipt["storage_id"] = storage_id
             hard = self._hard_decision(latest, set())
             if action == "archive" and hard and hard["action"] in {"keep", "evidence_only"}:
                 action = hard["action"]
@@ -653,7 +669,7 @@ class MemoryArchivist:
                 receipt["reason"] = f"执行器保护：{hard['reason']}"
             if not job.get("dry_run") and action == "archive":
                 raw = await review_handler(
-                    bucket_id=bucket_id,
+                    bucket_id=storage_id,
                     decision="reject",
                     actor="Ombre AI Archivist",
                     reason=receipt["reason"],
@@ -665,7 +681,7 @@ class MemoryArchivist:
                 receipt["changed"] = not bool(result.get("duplicate"))
             elif not job.get("dry_run") and action == "evidence_only" and layer_info["memory_layer"] != "evidence":
                 await self.bucket_manager.update(
-                    bucket_id,
+                    storage_id,
                     memory_layer="evidence",
                     recall_policy=RECALL_POLICIES["evidence"],
                 )

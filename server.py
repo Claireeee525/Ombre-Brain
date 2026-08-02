@@ -1560,7 +1560,9 @@ async def memory_review(
             restored_layer = "active"
         updates["memory_layer"] = restored_layer
         updates["recall_policy"] = RECALL_POLICIES[restored_layer]
-    await bucket_mgr.update(bucket["id"], **updates)
+    # Keep the caller's storage locator: legacy imports can carry a frontmatter
+    # id that differs from the filename used by BucketManager.
+    await bucket_mgr.update(str(bucket_id), **updates)
     return _json_lib.dumps({"ok": True, "bucket_id": bucket["id"], **updates}, ensure_ascii=False)
 
 

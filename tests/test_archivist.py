@@ -25,6 +25,15 @@ class FakeBucketManager:
         return True
 
 
+class LegacyLocatorBucketManager(FakeBucketManager):
+    async def get(self, bucket_id):
+        if bucket_id == "legacy-file-name":
+            return deepcopy(self.buckets.get("frontmatter-id"))
+        if bucket_id == "frontmatter-id":
+            return None
+        return await super().get(bucket_id)
+
+
 class FakeCompletions:
     def __init__(self, decisions):
         self.decisions = decisions
@@ -216,3 +225,34 @@ def test_worker_save_cannot_overwrite_a_concurrent_pause_request(tmp_path):
     saved = runner._load_job(job["id"])
     assert saved["pause_requested"] is True
     assert saved["pause_reason"] == "用户暂停"
+
+
+@pytest.mark.asyncio
+async def test_archivist_uses_filename_locator_for_legacy_frontmatter_ids(tmp_path):
+    legacy = bucket("frontmatter-id", "一次无事实内容的寒暄占位。")
+    legacy["path"] = "/vault/legacy-file-name.md"
+    manager = LegacyLocatorBucketManager([legacy])
+    dehydrator = FakeDehydrator([
+        {"id": "frontmatter-id", "action": "archive", "confidence": 0.98, "reason": "明确无效占位"},
+    ])
+    runner = MemoryArchivist({"buckets_dir": str(tmp_path), "archivist": {}}, manager, dehydrator)
+    calls = []
+
+    async def review_handler(bucket_id, decision, **kwargs):
+        calls.append((bucket_id, decision))
+        meta = manager.buckets["frontmatter-id"]["metadata"]
+        if decision == "reject":
+            meta.update(memory_status="rejected", memory_layer="archive", recall_policy="hidden")
+        elif decision == "restore":
+            meta.update(memory_status="confirmed", memory_layer="active", recall_policy="normal")
+        return json.dumps({"ok": True})
+
+    started = await runner.start(review_handler)
+    finished = await wait_terminal(runner, started["id"])
+    assert finished["status"] == "completed"
+    assert finished["failed"] == 0
+    assert calls == [("legacy-file-name", "reject")]
+
+    restored = await runner.restore(started["id"], review_handler)
+    assert restored["status"] == "restored"
+    assert calls[-1] == ("legacy-file-name", "restore")
