@@ -27,6 +27,7 @@ EXPECTED_TOOL_ALIASES = {
     "herbier": ("记忆藏页", "catalogue", "memory"),
     "inventory": ("只读盘点", "audit", "inventory"),
     "dupes": ("重复审核组", "duplicate", "review"),
+    "archivist": ("AI记忆归档员", "batch", "archive"),
     "pulse": ("系统状态", "status", "memories"),
     "dream": ("做梦", "reflect", "memory"),
     "handoff": ("短期状态", "handoff", "short-term"),

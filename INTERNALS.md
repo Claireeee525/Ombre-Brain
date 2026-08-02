@@ -326,7 +326,7 @@
 | `merge_threshold` | `75` | 合并相似度阈值 (0-100) |
 | `matching.keyword_evidence_threshold` | `0.72` | 允许召回的直接文本证据门槛 (0-1) |
 | `matching.semantic_evidence_threshold` | `0.72` | 允许召回的语义余弦证据门槛 (0-1) |
-| `dehydration.model` | `"deepseek-chat"` | 脱水用 LLM 模型 |
+| `dehydration.model` | `"deepseek-v4-flash"` | 脱水用 LLM 模型 |
 | `dehydration.base_url` | `"https://api.deepseek.com/v1"` | API 地址 |
 | `dehydration.api_key` | `""` | API 密钥 |
 | `dehydration.max_tokens` | `1024` | 脱水返回 token 上限 |

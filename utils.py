@@ -34,11 +34,23 @@ def load_config(config_path: str = None) -> dict:
         "buckets_dir": os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets"),
         "merge_threshold": 75,
         "dehydration": {
-            "model": "deepseek-chat",
+            "model": "deepseek-v4-flash",
             "base_url": "https://api.deepseek.com/v1",
             "api_key": "",
             "max_tokens": 1024,
             "temperature": 0.1,
+        },
+        "archivist": {
+            "model": "deepseek-v4-flash",
+            "review_model": "deepseek-v4-pro",
+            "batch_size": 8,
+            "archive_confidence": 0.93,
+            "max_input_tokens": 5_000_000,
+            "max_output_tokens": 500_000,
+            "input_usd_per_million": 0.14,
+            "output_usd_per_million": 0.28,
+            "review_input_usd_per_million": 0.435,
+            "review_output_usd_per_million": 0.87,
         },
         "decay": {
             "lambda": 0.05,
@@ -109,6 +121,14 @@ def load_config(config_path: str = None) -> dict:
     env_dehy_base_url = os.environ.get("OMBRE_DEHYDRATION_BASE_URL", "")
     if env_dehy_base_url:
         config.setdefault("dehydration", {})["base_url"] = env_dehy_base_url
+
+    env_archivist_model = os.environ.get("OMBRE_ARCHIVIST_MODEL", "")
+    if env_archivist_model:
+        config.setdefault("archivist", {})["model"] = env_archivist_model
+
+    env_archivist_review_model = os.environ.get("OMBRE_ARCHIVIST_REVIEW_MODEL", "")
+    if env_archivist_review_model:
+        config.setdefault("archivist", {})["review_model"] = env_archivist_review_model
 
     # OMBRE_EMBEDDING_MODEL overrides embedding.model
     env_embed_model = os.environ.get("OMBRE_EMBEDDING_MODEL", "")

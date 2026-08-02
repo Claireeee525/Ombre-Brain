@@ -15,7 +15,11 @@
 | `OMBRE_OAUTH_ENABLED` | 否 | `false` | 启用 MCP 标准 OAuth 2.1；生产公网应设为 `true`，启用前必须已有 Dashboard 密码 |
 | `OMBRE_PUBLIC_URL` | 否 | `https://kelo-brain.zeabur.app` | OAuth 发行者与 MCP 资源的公网 HTTPS 根地址，不带末尾 `/` |
 | `OMBRE_MCP_REQUIRE_AUTH` | 否 | `false` | 旧式静态 Bearer 门禁，仅作兼容回退；OAuth 开启时忽略 |
-| `OMBRE_DEHYDRATION_MODEL` | 否 | `deepseek-chat` | 脱水/打标/合并/拆分用的 LLM 模型名（覆盖 `dehydration.model`） |
+| `OMBRE_DEHYDRATION_MODEL` | 否 | `deepseek-v4-flash` | 脱水/打标/合并/拆分用的 LLM 模型名（覆盖 `dehydration.model`） |
+| `OMBRE_ARCHIVIST_MODEL` | 否 | `deepseek-v4-flash` | 历史记忆 AI 归档初筛模型 |
+| `OMBRE_ARCHIVIST_REVIEW_MODEL` | 否 | `deepseek-v4-pro` | 历史记忆边界项复核模型 |
+| `OMBRE_ARCHIVIST_MAX_INPUT_TOKENS` | 否 | `5000000` | 单批历史归档允许消耗的输入 token 安全上限 |
+| `OMBRE_ARCHIVIST_MAX_OUTPUT_TOKENS` | 否 | `500000` | 单批历史归档允许消耗的输出 token 安全上限 |
 | `OMBRE_DEHYDRATION_BASE_URL` | 否 | `https://api.deepseek.com/v1` | 脱水模型的 API Base URL（覆盖 `dehydration.base_url`） |
 | `OMBRE_MODEL` | 否 | — | `OMBRE_DEHYDRATION_MODEL` 的别名（前者优先） |
 | `OMBRE_EMBEDDING_MODEL` | 否 | `gemini-embedding-001` | 向量嵌入模型名（覆盖 `embedding.model`） |

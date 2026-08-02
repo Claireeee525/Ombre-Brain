@@ -66,6 +66,7 @@ from curator import (
 )
 from inventory import build_inventory
 from backup import create_backup, verify_backup
+from archivist import MemoryArchivist
 from memory_layers import (
     MEMORY_LAYERS,
     RECALL_POLICIES,
@@ -79,7 +80,7 @@ import somatic_state
 import nudge_engine
 import family_engine
 
-OMBRE_VERSION = "1.7.0"
+OMBRE_VERSION = "1.8.0"
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -260,6 +261,7 @@ bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket 
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
+archivist_runner = MemoryArchivist(config, bucket_mgr, dehydrator)  # Historical AI archivist / 历史记忆 AI 归档员
 
 # --- 记忆家族：向量聚族 + 家族摘要（挂在 embedding 引擎的回调上）---
 family_engine.init(config, bucket_loader=bucket_mgr.get, dehydrator=dehydrator)
@@ -1560,6 +1562,44 @@ async def memory_review(
         updates["recall_policy"] = RECALL_POLICIES[restored_layer]
     await bucket_mgr.update(bucket["id"], **updates)
     return _json_lib.dumps({"ok": True, "bucket_id": bucket["id"], **updates}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def archivist(
+    action: str = "status",
+    job_id: str = "",
+    dry_run: bool = False,
+    max_records: int = 0,
+    batch_size: int = 0,
+    limit: int = 100,
+) -> str:
+    """archivist AI记忆归档员 batch archive cleanup。后台分批整理历史记忆；action=start/status/pause/retry/restore/audit。只做可恢复归档，保护置顶/永久/重要边界，不物理删除原文，不自动合并同名记忆。"""
+    action = str(action or "status").strip().lower()
+    try:
+        if action == "start":
+            result = await archivist_runner.start(
+                memory_review,
+                dry_run=bool(dry_run),
+                max_records=max(0, int(max_records or 0)),
+                batch_size=max(0, int(batch_size or 0)),
+            )
+        elif action == "status":
+            result = archivist_runner.get(job_id) if job_id else archivist_runner.latest()
+            result = result or {"status": "idle", "source_total": 0, "processed": 0}
+        elif action == "pause":
+            result = await archivist_runner.pause(job_id)
+        elif action == "retry":
+            result = await archivist_runner.retry(job_id, memory_review)
+        elif action == "restore":
+            result = await archivist_runner.restore(job_id, memory_review)
+        elif action == "audit":
+            items = archivist_runner.audit(limit=limit, job_id=job_id)
+            result = {"items": items, "total": len(items), "job_id": job_id}
+        else:
+            return _json_lib.dumps({"ok": False, "error": "action 只能是 start/status/pause/retry/restore/audit"}, ensure_ascii=False)
+        return _json_lib.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        return _json_lib.dumps({"ok": False, "error": str(exc)[:360]}, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -3738,7 +3778,7 @@ async def api_config_update(request):
             dehy["api_key"] = d["api_key"]
             updated.append("dehydration.api_key")
         # Hot-reload dehydrator
-        dehydrator.model = dehy.get("model", "deepseek-chat")
+        dehydrator.model = dehy.get("model", "deepseek-v4-flash")
         dehydrator.base_url = dehy.get("base_url", "")
         dehydrator.api_key = dehy.get("api_key", "")
         if hasattr(dehydrator, "client") and dehydrator.api_key:
