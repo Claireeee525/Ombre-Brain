@@ -89,9 +89,24 @@ class MemoryArchivist:
         self.jobs_dir = self.root / "jobs"
         self.audit_path = self.root / "audit.jsonl"
         self._tasks: dict[str, asyncio.Task] = {}
+        self._index_tasks: set[asyncio.Task] = set()
+        self._index_semaphore = asyncio.Semaphore(4)
         self._start_lock = asyncio.Lock()
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self._mark_interrupted_jobs()
+
+    def _index_in_background(self, bucket_id: str, content: str) -> None:
+        engine = getattr(self.bucket_manager, "embedding_engine", None)
+        if not engine:
+            return
+
+        async def _run() -> None:
+            async with self._index_semaphore:
+                await engine.generate_and_store(bucket_id, content)
+
+        task = asyncio.create_task(_run())
+        self._index_tasks.add(task)
+        task.add_done_callback(self._index_tasks.discard)
 
     def _job_path(self, job_id: str) -> Path:
         safe_id = re.sub(r"[^a-zA-Z0-9-]", "", str(job_id or ""))
@@ -750,9 +765,9 @@ class MemoryArchivist:
                         "changed": not bool(result.get("duplicate")),
                     })
                 receipt["changed"] = True
-                engine = getattr(self.bucket_manager, "embedding_engine", None)
-                if engine:
-                    await engine.generate_and_store(canonical_id, proposal["content"])
+                # Search indexing is important, but it must not hold the whole
+                # consolidation job hostage to one remote embedding request.
+                self._index_in_background(canonical_id, proposal["content"])
             job.setdefault("decisions", []).append(receipt)
             job.setdefault("actions", []).append(receipt)
             for source_id in source_ids:
