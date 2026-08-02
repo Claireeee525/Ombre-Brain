@@ -809,7 +809,7 @@ class BucketManager:
                 continue
             for root, _, files in os.walk(dir_path):
                 for filename in files:
-                    if not filename.endswith(".md"):
+                    if filename.startswith("._") or not filename.endswith(".md"):
                         continue
                     file_path = os.path.join(root, filename)
                     bucket = self._load_bucket(file_path)
@@ -922,7 +922,7 @@ class BucketManager:
                 continue
             for root, _, files in os.walk(dir_path):
                 for fname in files:
-                    if not fname.endswith(".md"):
+                    if fname.startswith("._") or not fname.endswith(".md"):
                         continue
                     # Match by exact ID segment in filename
                     # 通过文件名中的 ID 片段精确匹配
@@ -941,7 +941,7 @@ class BucketManager:
                 continue
             for root, _, files in os.walk(dir_path):
                 for fname in files:
-                    if not fname.endswith(".md"):
+                    if fname.startswith("._") or not fname.endswith(".md"):
                         continue
                     path = os.path.join(root, fname)
                     try:

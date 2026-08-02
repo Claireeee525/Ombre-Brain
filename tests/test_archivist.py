@@ -263,8 +263,9 @@ async def test_archivist_uses_filename_locator_for_legacy_frontmatter_ids(tmp_pa
 @pytest.mark.asyncio
 async def test_bucket_manager_resolves_legacy_frontmatter_id_not_in_filename(tmp_path):
     buckets_dir = tmp_path / "buckets"
-    legacy_path = buckets_dir / "dynamic" / "旧导入" / "完全不同的历史文件名.md"
+    legacy_path = buckets_dir / "dynamic" / "旧导入" / "人机恋焦虑_legacy-internal-id.md"
     legacy_path.parent.mkdir(parents=True)
+    (legacy_path.parent / f"._{legacy_path.name}").write_bytes(b"\x00\x05\x16\x07appledouble")
     legacy_path.write_text(
         frontmatter.dumps(frontmatter.Post("旧记录正文", id="legacy-internal-id", importance=5)),
         encoding="utf-8",
