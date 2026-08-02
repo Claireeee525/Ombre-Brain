@@ -680,6 +680,8 @@ async def _merge_or_create(
                     or meta.get("type") in ("permanent", "feel")
                     or meta.get("pinned")
                     or meta.get("protected")
+                    or meta.get("source_kind") == "original_evidence"
+                    or meta.get("memory_layer") == "evidence"
                 ):
                     continue
                 score = duplicate_similarity(item, candidate)
