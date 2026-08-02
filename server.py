@@ -1605,6 +1605,75 @@ async def archivist(
 
 
 @mcp.tool()
+async def cleanup(
+    action: str = "scan",
+    target: str = "macos_junk",
+    limit: int = 30,
+) -> str:
+    """cleanup 清理垃圾文件 macOS 影子文件 AppleDouble dot underscore garbage 清扫 sweep purge。target=macos_junk 扫描/删除所有 ._ 开头的 macOS 伴随文件（这些是 Mac 传文件到 Linux 服务器时自动生成的隐藏元数据文件，不是真记忆）。action=scan 只报告，action=delete 才真删除。limit 控制返回样本数量。"""
+    from pathlib import Path
+    action = str(action or "scan").strip().lower()
+    target = str(target or "macos_junk").strip().lower()
+
+    if target != "macos_junk":
+        return _json_lib.dumps({"ok": False, "error": f"未知 target: {target}，目前只支持 macos_junk"}, ensure_ascii=False)
+    if action not in {"scan", "delete"}:
+        return _json_lib.dumps({"ok": False, "error": f"action 只能是 scan 或 delete，收到: {action}"}, ensure_ascii=False)
+
+    try:
+        base = Path(bucket_mgr.base_dir)
+        if not base.exists():
+            return _json_lib.dumps({"ok": False, "error": f"buckets 目录不存在: {base}"}, ensure_ascii=False)
+
+        junk_files = []
+        total_bytes = 0
+        for path in base.rglob("._*"):
+            if path.is_file():
+                junk_files.append(path)
+                try:
+                    total_bytes += path.stat().st_size
+                except OSError:
+                    pass
+
+        sample = [str(p.relative_to(base)) for p in junk_files[:max(0, int(limit or 30))]]
+
+        if action == "scan":
+            return _json_lib.dumps({
+                "ok": True,
+                "action": "scan",
+                "target": "macos_junk",
+                "count": len(junk_files),
+                "total_bytes": total_bytes,
+                "buckets_dir": str(base),
+                "sample": sample,
+                "note": "这些是 macOS 从 Mac 同步文件到 Linux 时自动生成的 AppleDouble 元数据文件，不含记忆内容。可以放心删除。",
+            }, ensure_ascii=False)
+
+        deleted = 0
+        failed = []
+        for path in junk_files:
+            try:
+                path.unlink()
+                deleted += 1
+            except Exception as exc:
+                failed.append({"path": str(path.relative_to(base)), "error": str(exc)[:120]})
+
+        return _json_lib.dumps({
+            "ok": True,
+            "action": "delete",
+            "target": "macos_junk",
+            "deleted": deleted,
+            "failed_count": len(failed),
+            "failed_sample": failed[:10],
+            "freed_bytes": total_bytes if not failed else None,
+            "buckets_dir": str(base),
+        }, ensure_ascii=False)
+
+    except Exception as exc:
+        return _json_lib.dumps({"ok": False, "error": str(exc)[:360]}, ensure_ascii=False)
+
+
+@mcp.tool()
 async def source_read(
     bucket_id: str = "",
     source_evidence_id: str = "",
