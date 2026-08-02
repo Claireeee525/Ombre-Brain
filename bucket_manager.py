@@ -174,12 +174,13 @@ class BucketManager:
             "superseded_by", "operation", "rationale", "reviewed_at", "review_decision",
             "batch_id", "memory_scope", "signed_by", "evidence_speakers", "participants",
             "curated_by", "source_surface", "evidence_quotes", "memory_layer",
-            "recall_policy", "expires_at", "source_bucket",
+            "recall_policy", "expires_at", "source_bucket", "consolidated_from",
+            "source_surfaces", "consolidation_job_id", "consolidation_topic",
         }
         for key, value in (extra_metadata or {}).items():
             if key not in allowed_extra or value is None:
                 continue
-            if key in {"source_message_ids", "signed_by", "evidence_speakers", "participants"}:
+            if key in {"source_message_ids", "signed_by", "evidence_speakers", "participants", "consolidated_from", "source_surfaces"}:
                 metadata[key] = [str(item)[:100] for item in (value or []) if str(item).strip()][:12]
             elif key == "evidence_quotes":
                 metadata[key] = [
@@ -361,7 +362,7 @@ class BucketManager:
             ][:24]
         if "confidence" in kwargs:
             post["confidence"] = max(0.0, min(1.0, float(kwargs["confidence"])))
-        for key in ("signed_by", "evidence_speakers", "participants", "source_message_ids"):
+        for key in ("signed_by", "evidence_speakers", "participants", "source_message_ids", "consolidated_from", "source_surfaces"):
             if key in kwargs:
                 post[key] = [str(item)[:100] for item in (kwargs[key] or []) if str(item).strip()][:12]
         if "agent_stances" in kwargs:
@@ -380,7 +381,7 @@ class BucketManager:
                     "updated_at": str(item.get("updated_at") or "").strip()[:80],
                 })
             post["agent_stances"] = stances[:4]
-        for key in ("memory_scope", "curated_by", "source_surface", "source_session_id", "source_kind"):
+        for key in ("memory_scope", "curated_by", "source_surface", "source_session_id", "source_kind", "consolidation_job_id", "consolidation_topic"):
             if key in kwargs:
                 post[key] = str(kwargs[key])[:180]
 

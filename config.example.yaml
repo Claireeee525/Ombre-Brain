@@ -49,6 +49,15 @@ dehydration:
   max_tokens: 1024
   temperature: 0.1
 
+# --- Historical AI consolidation / 历史记忆 AI 整合 ---
+archivist:
+  model: "deepseek-v4-flash"
+  review_model: "deepseek-v4-pro"
+  batch_size: 8
+  archive_confidence: 0.93
+  merge_confidence: 0.88       # DeepSeek confidence required before writing a canonical memory
+  similarity_threshold: 0.78  # Local embedding candidate recall; the model still validates each group
+
 # --- Decay parameters / 记忆衰减参数 ---
 # Simulates Ebbinghaus forgetting curve, auto-archives inactive memories
 # 模拟艾宾浩斯遗忘曲线，自动归档不活跃的记忆

@@ -1575,7 +1575,7 @@ async def archivist(
     batch_size: int = 0,
     limit: int = 100,
 ) -> str:
-    """archivist AI记忆归档员 batch archive cleanup。后台分批整理历史记忆；action=start/status/pause/retry/restore/audit。只做可恢复归档，保护置顶/永久/重要边界，不物理删除原文，不自动合并同名记忆。"""
+    """archivist AI记忆归档员 AI记忆整合员 batch archive semantic consolidation deduplicate。后台跨 Kelo、Calder、Claude 官方端寻找重复或相似记忆，由 DeepSeek 生成一条主记忆并保留可恢复来源；action=start/status/pause/retry/restore/audit。保护置顶/永久记忆，不物理删除原文。"""
     action = str(action or "status").strip().lower()
     try:
         if action == "start":
@@ -3008,6 +3008,10 @@ async def herbier(limit: int = 100, offset: int = 0, include_archive: bool = Fal
                 "supersedes": meta.get("supersedes", ""),
                 "rationale": meta.get("rationale", ""),
                 "agent_stances": meta.get("agent_stances", []),
+                "consolidated_from": meta.get("consolidated_from", []),
+                "source_surfaces": meta.get("source_surfaces", []),
+                "consolidation_job_id": meta.get("consolidation_job_id", ""),
+                "consolidation_topic": meta.get("consolidation_topic", ""),
             })
         return _json_lib.dumps({
             "source": "ombre_brain",

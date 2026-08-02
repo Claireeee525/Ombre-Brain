@@ -259,6 +259,118 @@ class EmbeddingEngine:
                 return None
         return None
 
+    def find_related_groups(
+        self,
+        bucket_ids: list[str],
+        *,
+        threshold: float = 0.78,
+        max_neighbors: int = 4,
+        max_group_size: int = 8,
+    ) -> list[dict]:
+        """Return local semantic candidate groups without making API calls.
+
+        The archivist uses these as *candidates* only. DeepSeek still decides
+        whether the records describe the same memory before anything changes.
+        Keeping this lookup local makes a full catalogue scan cheap and lets
+        records imported by different Claude surfaces meet each other.
+        """
+        wanted = {str(item) for item in bucket_ids if str(item).strip()}
+        if len(wanted) < 2:
+            return []
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT bucket_id, embedding FROM embeddings",
+        ).fetchall()
+        conn.close()
+        ids = []
+        vectors = []
+        expected_size = None
+        for bucket_id, raw in rows:
+            if str(bucket_id) not in wanted:
+                continue
+            try:
+                vector = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(vector, list) or not vector:
+                continue
+            if expected_size is None:
+                expected_size = len(vector)
+            if len(vector) != expected_size:
+                continue
+            ids.append(str(bucket_id))
+            vectors.append(vector)
+        if len(ids) < 2:
+            return []
+
+        try:
+            import numpy as np
+
+            matrix = np.asarray(vectors, dtype=np.float32)
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            matrix = matrix / np.maximum(norms, 1e-12)
+            similarities = matrix @ matrix.T
+        except (ImportError, ValueError):
+            # Production includes numpy. A small pure-Python fallback keeps
+            # the method usable in lightweight test/repair environments.
+            similarities = [
+                [self._cosine_similarity(left, right) for right in vectors]
+                for left in vectors
+            ]
+
+        pairs = []
+        for left_index, left_id in enumerate(ids):
+            row = similarities[left_index]
+            candidates = sorted(
+                (
+                    (float(row[right_index]), right_index)
+                    for right_index in range(left_index + 1, len(ids))
+                    if float(row[right_index]) >= threshold
+                ),
+                reverse=True,
+            )[:max(1, int(max_neighbors))]
+            pairs.extend((score, left_index, right_index) for score, right_index in candidates)
+        pairs.sort(reverse=True)
+
+        groups: list[dict] = []
+        assigned: dict[int, int] = {}
+        for score, left_index, right_index in pairs:
+            left_group = assigned.get(left_index)
+            right_group = assigned.get(right_index)
+            if left_group is None and right_group is None:
+                group_index = len(groups)
+                groups.append({"ids": [ids[left_index], ids[right_index]], "scores": [score]})
+                assigned[left_index] = group_index
+                assigned[right_index] = group_index
+                continue
+            if left_group is not None and right_group is None:
+                group_index, new_index = left_group, right_index
+            elif right_group is not None and left_group is None:
+                group_index, new_index = right_group, left_index
+            else:
+                # Do not join two existing clusters: transitive similarity can
+                # otherwise collapse a whole category into one giant memory.
+                continue
+            group = groups[group_index]
+            if len(group["ids"]) >= max(2, int(max_group_size)):
+                continue
+            member_indexes = [ids.index(item) for item in group["ids"]]
+            member_scores = [float(similarities[new_index][member]) for member in member_indexes]
+            if min(member_scores, default=0.0) < threshold:
+                continue
+            group["ids"].append(ids[new_index])
+            group["scores"].extend(member_scores)
+            assigned[new_index] = group_index
+
+        return [
+            {
+                "ids": group["ids"],
+                "similarity": round(sum(group["scores"]) / max(1, len(group["scores"])), 4),
+            }
+            for group in groups
+            if len(group["ids"]) >= 2
+        ]
+
     async def search_similar(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
         """
         Search for buckets similar to query text.

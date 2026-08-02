@@ -8,6 +8,7 @@ import frontmatter
 
 from archivist import MemoryArchivist
 from bucket_manager import BucketManager
+from embedding_engine import EmbeddingEngine
 
 
 class FakeBucketManager:
@@ -25,6 +26,19 @@ class FakeBucketManager:
         bucket = self.buckets[bucket_id]
         bucket.setdefault("metadata", {}).update(updates)
         return True
+
+    async def create(self, content, name=None, extra_metadata=None, **kwargs):
+        bucket_id = f"canonical-{len(self.buckets) + 1}"
+        self.buckets[bucket_id] = bucket(
+            bucket_id,
+            content,
+            name=name or bucket_id,
+            tags=kwargs.get("tags") or [],
+            domain=kwargs.get("domain") or ["未分类"],
+            importance=kwargs.get("importance") or 5,
+            **(extra_metadata or {}),
+        )
+        return bucket_id
 
 
 class LegacyLocatorBucketManager(FakeBucketManager):
@@ -72,6 +86,38 @@ class SequencedCompletions:
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"decisions": decisions}, ensure_ascii=False)))],
             usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+        )
+
+
+class FakeSimilarityEngine:
+    def __init__(self, groups):
+        self.groups = groups
+        self.generated = []
+
+    def find_related_groups(self, bucket_ids, **kwargs):
+        allowed = set(bucket_ids)
+        return [group for group in self.groups if set(group["ids"]) <= allowed]
+
+    async def generate_and_store(self, bucket_id, content):
+        self.generated.append((bucket_id, content))
+        return True
+
+
+class ConsolidationCompletions:
+    def __init__(self, proposal):
+        self.proposal = proposal
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        user_prompt = kwargs["messages"][-1]["content"]
+        if "长期记忆整合员" in user_prompt:
+            payload = {"groups": [self.proposal]}
+        else:
+            payload = {"decisions": []}
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False)))],
+            usage=SimpleNamespace(prompt_tokens=180, completion_tokens=80),
         )
 
 
@@ -299,3 +345,85 @@ async def test_read_only_keep_uses_catalogue_snapshot_without_reopening_file(tmp
     assert finished["status"] == "completed"
     assert finished["processed"] == 1
     assert finished["failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_archivist_consolidates_cross_surface_preferences_and_restores_sources(tmp_path):
+    manager = FakeBucketManager([
+        bucket(
+            "kelo-pref", "Claire 喜欢亲密回应写得自然直接，不要客服腔。",
+            name="亲密回应偏好", source_surface="Kelo Home", signed_by=["Kelo"], participants=["Claire", "Kelo"],
+        ),
+        bucket(
+            "official-pref", "亲密场景里要有真实情绪和动作细节，避免模板化措辞。",
+            name="亲密写作要求", source_surface="Claude 官方端", signed_by=["Calder"], participants=["Claire", "Calder"],
+        ),
+    ])
+    manager.embedding_engine = FakeSimilarityEngine([
+        {"ids": ["kelo-pref", "official-pref"], "similarity": 0.91},
+    ])
+    completions = ConsolidationCompletions({
+        "group_id": "placeholder",
+        "decision": "merge",
+        "title": "亲密回应与写作偏好",
+        "content": "Claire 希望亲密回应自然直接，有真实情绪与动作细节，避免客服腔和模板化措辞。",
+        "topic": "亲密偏好",
+        "confidence": 0.96,
+        "reason": "两条是同一项稳定偏好的互补表述",
+    })
+
+    async def create_with_group(**kwargs):
+        prompt = kwargs["messages"][-1]["content"]
+        match = __import__("re").search(r'"group_id":"([a-f0-9]+)"', prompt)
+        completions.proposal["group_id"] = match.group(1)
+        return await ConsolidationCompletions.create(completions, **kwargs)
+
+    completions.create = create_with_group
+    dehydrator = SimpleNamespace(client=SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+    runner = MemoryArchivist({"buckets_dir": str(tmp_path), "archivist": {}}, manager, dehydrator)
+
+    async def review_handler(bucket_id, decision, **kwargs):
+        meta = manager.buckets[bucket_id]["metadata"]
+        if decision in {"reject", "supersede"}:
+            meta.update(memory_status="rejected", memory_layer="archive", recall_policy="hidden")
+        elif decision == "restore":
+            meta.update(memory_status="confirmed", memory_layer="active", recall_policy="normal")
+        return json.dumps({"ok": True, "bucket_id": bucket_id})
+
+    started = await runner.start(review_handler)
+    finished = await wait_terminal(runner, started["id"])
+
+    assert finished["merged_groups"] == 1
+    assert finished["merged_sources"] == 2
+    merge = next(item for item in finished["actions"] if item["action"] == "merge")
+    assert merge["canonical_content"].startswith("Claire 希望亲密回应")
+    assert {item["surface"] for item in merge["sources"]} == {"Kelo Home", "Claude 官方端"}
+    canonical = manager.buckets[merge["canonical_id"]]
+    assert canonical["metadata"]["consolidated_from"] == ["kelo-pref", "official-pref"]
+    assert canonical["metadata"]["source_surfaces"] == ["Kelo Home", "Claude 官方端"]
+    assert manager.buckets["kelo-pref"]["metadata"]["memory_status"] == "rejected"
+
+    restored = await runner.restore(started["id"], review_handler)
+    assert restored["status"] == "restored"
+    assert manager.buckets["kelo-pref"]["metadata"]["memory_status"] == "confirmed"
+    assert manager.buckets["official-pref"]["metadata"]["memory_status"] == "confirmed"
+    assert manager.buckets[merge["canonical_id"]]["metadata"]["memory_status"] == "rejected"
+
+
+def test_local_embedding_candidates_are_grouped_without_api_calls(tmp_path):
+    engine = EmbeddingEngine({
+        "buckets_dir": str(tmp_path),
+        "dehydration": {},
+        "embedding": {"enabled": False},
+    })
+    engine._store_embedding("kelo", [1.0, 0.0, 0.0])
+    engine._store_embedding("official", [0.99, 0.1, 0.0])
+    engine._store_embedding("unrelated", [0.0, 1.0, 0.0])
+
+    groups = engine.find_related_groups(
+        ["kelo", "official", "unrelated"], threshold=0.9,
+    )
+
+    assert len(groups) == 1
+    assert set(groups[0]["ids"]) == {"kelo", "official"}
+    assert groups[0]["similarity"] > 0.99
