@@ -810,7 +810,7 @@ class MemoryArchivist:
             job["candidate_groups"] = len(candidate_groups)
             job["candidate_sources"] = sum(len(group["buckets"]) for group in candidate_groups)
             self._save_job(job)
-            for offset in range(0, len(candidate_groups), 3):
+            for offset in range(0, len(candidate_groups), 5):
                 if self._pause_if_requested(job):
                     return
                 if self._budget_exhausted(job):
@@ -818,7 +818,7 @@ class MemoryArchivist:
                     job["pause_reason"] = "达到本批 token 安全上限"
                     self._save_job(job)
                     return
-                group_batch = candidate_groups[offset:offset + 3]
+                group_batch = candidate_groups[offset:offset + 5]
                 proposals, usage = await self._propose_consolidations(group_batch, self.model)
                 self._add_usage(job, usage)
                 for group in group_batch:
@@ -829,6 +829,24 @@ class MemoryArchivist:
                     await self._record_consolidation(job, group, proposal, review_handler)
                     if self._pause_if_requested(job):
                         return
+
+            # A real catalogue has the embedding engine above. Once every
+            # semantic candidate has been reviewed, unrelated records are not
+            # "legacy chores" for DeepSeek: leave them untouched and finish.
+            # The fallback below remains for lightweight/offline deployments
+            # that do not have semantic indexing.
+            engine = getattr(self.bucket_manager, "embedding_engine", None)
+            if engine and hasattr(engine, "find_related_groups"):
+                processed = set(job.get("processed_ids") or [])
+                untouched = [str(bucket["id"]) for bucket in ordered if str(bucket["id"]) not in processed]
+                job.setdefault("processed_ids", []).extend(untouched)
+                job["kept"] = int(job.get("kept") or 0) + len(untouched)
+                job["processed"] = len(set(job["processed_ids"]))
+                job["status"] = "completed_with_errors" if job.get("failed_ids") else "completed"
+                job["completed_at"] = _now_iso()
+                self._save_job(job)
+                self._append_audit({"event": "job_completed", "job_id": job_id, "status": job["status"]})
+                return
 
             duplicate_decisions, same_name_ids = self._duplicate_decisions(ordered)
             processed = set(job.get("processed_ids") or [])
