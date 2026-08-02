@@ -658,9 +658,15 @@ class MemoryArchivist:
             },
         }
         try:
-            storage_id, latest = await self._resolve_bucket(bucket)
-            if not latest:
-                raise RuntimeError("执行前记忆已不存在")
+            # Keep/review and every dry-run decision are read-only. The
+            # catalogue snapshot is sufficient; only re-resolve the backing
+            # file immediately before a real mutation.
+            storage_id = bucket_id
+            latest = bucket
+            if not job.get("dry_run") and action in {"archive", "evidence_only"}:
+                storage_id, latest = await self._resolve_bucket(bucket)
+                if not latest:
+                    raise RuntimeError("执行前记忆已不存在")
             receipt["storage_id"] = storage_id
             hard = self._hard_decision(latest, set())
             if action == "archive" and hard and hard["action"] in {"keep", "evidence_only"}:

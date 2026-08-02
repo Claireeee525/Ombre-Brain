@@ -36,6 +36,11 @@ class LegacyLocatorBucketManager(FakeBucketManager):
         return await super().get(bucket_id)
 
 
+class SnapshotOnlyBucketManager(FakeBucketManager):
+    async def get(self, bucket_id):
+        return None
+
+
 class FakeCompletions:
     def __init__(self, decisions):
         self.decisions = decisions
@@ -276,3 +281,21 @@ async def test_bucket_manager_resolves_legacy_frontmatter_id_not_in_filename(tmp
     assert loaded["content"] == "旧记录正文"
     assert await manager.update("legacy-internal-id", memory_layer="evidence") is True
     assert (await manager.get("legacy-internal-id"))["metadata"]["memory_layer"] == "evidence"
+
+
+@pytest.mark.asyncio
+async def test_read_only_keep_uses_catalogue_snapshot_without_reopening_file(tmp_path):
+    manager = SnapshotOnlyBucketManager([bucket("snapshot-only", "应当保留的普通事实")])
+    dehydrator = FakeDehydrator([
+        {"id": "snapshot-only", "action": "keep", "confidence": 0.99, "reason": "稳定事实"},
+    ])
+    runner = MemoryArchivist({"buckets_dir": str(tmp_path), "archivist": {}}, manager, dehydrator)
+
+    async def review_handler(**kwargs):
+        raise AssertionError("read-only keep must not mutate")
+
+    started = await runner.start(review_handler, dry_run=True)
+    finished = await wait_terminal(runner, started["id"])
+    assert finished["status"] == "completed"
+    assert finished["processed"] == 1
+    assert finished["failed"] == 0
