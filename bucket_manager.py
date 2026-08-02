@@ -60,6 +60,7 @@ class BucketManager:
         self.dynamic_dir = os.path.join(self.base_dir, "dynamic")
         self.archive_dir = os.path.join(self.base_dir, "archive")
         self.feel_dir = os.path.join(self.base_dir, "feel")
+        self._bucket_id_path_cache: dict[str, str] = {}
         self.fuzzy_threshold = config.get("matching", {}).get("fuzzy_threshold", 50)
         self.max_results = config.get("matching", {}).get("max_results", 5)
         matching = config.get("matching", {})
@@ -913,6 +914,9 @@ class BucketManager:
         """
         if not bucket_id:
             return None
+        cached = self._bucket_id_path_cache.get(bucket_id)
+        if cached and os.path.isfile(cached):
+            return cached
         for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir]:
             if not os.path.exists(dir_path):
                 continue
@@ -924,8 +928,29 @@ class BucketManager:
                     # 通过文件名中的 ID 片段精确匹配
                     name_part = fname[:-3]  # remove .md
                     if name_part == bucket_id or name_part.endswith(f"_{bucket_id}"):
-                        return os.path.join(root, fname)
-        return None
+                        found = os.path.join(root, fname)
+                        self._bucket_id_path_cache[bucket_id] = found
+                        return found
+
+        # Older imports can retain an internal frontmatter id that is not part
+        # of the filename. Build a lazy id index only after the fast filename
+        # lookup misses, then reuse it for the rest of the process lifetime.
+        self._bucket_id_path_cache.clear()
+        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir]:
+            if not os.path.exists(dir_path):
+                continue
+            for root, _, files in os.walk(dir_path):
+                for fname in files:
+                    if not fname.endswith(".md"):
+                        continue
+                    path = os.path.join(root, fname)
+                    try:
+                        internal_id = str(frontmatter.load(path).get("id") or "").strip()
+                    except Exception:
+                        continue
+                    if internal_id:
+                        self._bucket_id_path_cache[internal_id] = path
+        return self._bucket_id_path_cache.get(bucket_id)
 
     # ---------------------------------------------------------
     # Internal: load bucket data from .md file

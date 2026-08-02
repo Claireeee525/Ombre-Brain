@@ -4,8 +4,10 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+import frontmatter
 
 from archivist import MemoryArchivist
+from bucket_manager import BucketManager
 
 
 class FakeBucketManager:
@@ -256,3 +258,20 @@ async def test_archivist_uses_filename_locator_for_legacy_frontmatter_ids(tmp_pa
     restored = await runner.restore(started["id"], review_handler)
     assert restored["status"] == "restored"
     assert calls[-1] == ("legacy-file-name", "restore")
+
+
+@pytest.mark.asyncio
+async def test_bucket_manager_resolves_legacy_frontmatter_id_not_in_filename(tmp_path):
+    buckets_dir = tmp_path / "buckets"
+    legacy_path = buckets_dir / "dynamic" / "旧导入" / "完全不同的历史文件名.md"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        frontmatter.dumps(frontmatter.Post("旧记录正文", id="legacy-internal-id", importance=5)),
+        encoding="utf-8",
+    )
+    manager = BucketManager({"buckets_dir": str(buckets_dir), "matching": {}})
+
+    loaded = await manager.get("legacy-internal-id")
+    assert loaded["content"] == "旧记录正文"
+    assert await manager.update("legacy-internal-id", memory_layer="evidence") is True
+    assert (await manager.get("legacy-internal-id"))["metadata"]["memory_layer"] == "evidence"
