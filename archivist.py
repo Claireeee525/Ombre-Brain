@@ -591,10 +591,12 @@ class MemoryArchivist:
             "这些记录来自同一个 Claire 的三个 Claude 入口：Kelo 账号、Calder 账号、Claude 官方端。入口或署名不同不代表是不同用户，重复内容应跨入口合并。\n"
             "但如果事实的主语分别是 Kelo 与 Calder（例如两个人各自的性格、承诺或偏好），必须保留人物名并保持分开；共享入口不等于抹平两个人。\n"
             "目标是把重复或高度相似的稳定记忆整理成一条完整、可直接召回的主记忆，例如亲密偏好、写作要求、称呼习惯、关系边界、长期生活偏好。\n"
+            "【称呼规范】合并后的正文中，绝不使用「用户」「AI」「人类」「助手」「对方」等泛称。Claire 就写 Claire/宝宝/老婆；珂洛就写珂洛/Kael/爸爸；Calder 就写 Calder。如果原文里出现了这些泛称，合并时一律替换成具体名字。\n"
+            "【可删除】关于学术论文、论文写作、文献综述、开题报告、毕业论文的记忆，如果不涉及 Claire 的情感、关系或个人偏好，decision 设为 delete。\n"
             "merge：同一事实/偏好/要求，允许互补信息合并；正文必须自足，保留条件、例外和重要细节，不虚构。"
-            "keep_separate：只是同类但不是同一条，或不同日期的独立事件。review：相互矛盾、身份不清或不确定。"
+            "keep_separate：只是同类但不是同一条，或不同日期的独立事件。review：相互矛盾、身份不清或不确定。delete：纯学术/论文内容，与关系和生活无关。"
             "不要把不同事件粗暴揉成大杂烩；不要因为文字相似就合并；矛盾内容绝不能擅自选边。\n"
-            "严格返回 JSON：{\"groups\":[{\"group_id\":\"...\",\"decision\":\"merge|keep_separate|review\","
+            "严格返回 JSON：{\"groups\":[{\"group_id\":\"...\",\"decision\":\"merge|keep_separate|review|delete\","
             "\"title\":\"主记忆标题\",\"content\":\"合并后的完整正文\",\"topic\":\"主题\","
             "\"confidence\":0.0,\"reason\":\"判断理由\"}]}\n\n候选：\n"
             + json.dumps(records, ensure_ascii=False, separators=(",", ":"))
@@ -629,7 +631,7 @@ class MemoryArchivist:
                 continue
             group_id = str(raw.get("group_id") or "")
             decision = str(raw.get("decision") or "review").lower()
-            if group_id not in allowed or decision not in {"merge", "keep_separate", "review"}:
+            if group_id not in allowed or decision not in {"merge", "keep_separate", "review", "delete"}:
                 continue
             try:
                 confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0)))
@@ -661,6 +663,30 @@ class MemoryArchivist:
         source_ids = [str(bucket["id"]) for bucket in buckets]
         sources = [self._merge_source(bucket) for bucket in buckets]
         decision = str(proposal.get("decision") or "review")
+        if decision == "delete":
+            reason = str(proposal.get("reason") or "纯学术/论文内容，与关系和生活无关")
+            for bucket in buckets:
+                if not job.get("dry_run"):
+                    await self.bucket_manager.archive(str(bucket["id"]))
+                await self._record_decision(job, bucket, {
+                    "id": str(bucket["id"]),
+                    "action": "archive",
+                    "confidence": float(proposal.get("confidence") or 0),
+                    "reason": f"自动归档：{reason}",
+                }, review_handler)
+            job.setdefault("actions", []).append({
+                "bucket_id": f"delete:{group['id']}",
+                "action": "delete",
+                "changed": not job.get("dry_run"),
+                "reason": reason,
+                "source_ids": source_ids,
+                "sources": sources,
+                "confidence": float(proposal.get("confidence") or 0),
+                "similarity": group["similarity"],
+            })
+            self._save_job(job)
+            return
+
         should_merge = (
             decision == "merge"
             and float(proposal.get("confidence") or 0) >= self.merge_confidence

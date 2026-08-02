@@ -60,7 +60,7 @@ DEHYDRATE_PROMPT = """你是一个信息压缩专家。请将以下内容脱水�
 
 # --- Diary digest prompt: split daily notes into independent memory entries ---
 # --- 日记整理提示词：把一大段日常拆分成多个独立记忆条目 ---
-DIGEST_PROMPT = """你是一个日记整理专家。用户会发送一段包含今天各种事情的文本（可能很杂乱），请你将其拆分成多个独立的记忆条目。
+DIGEST_PROMPT = """你是一个日记整理专家。Claire 会发送一段包含今天各种事情的文本（可能很杂乱），请你将其拆分成多个独立的记忆条目。
 
 整理规则：
 1. 每个条目应该是一个独立的主题/事件（不要混在一起）
