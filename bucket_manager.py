@@ -124,6 +124,7 @@ class BucketManager:
         pinned: bool = False,
         protected: bool = False,
         extra_metadata: dict = None,
+        created_override: str = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -158,7 +159,7 @@ class BucketManager:
             "arousal": max(0.0, min(1.0, arousal)),
             "importance": max(1, min(10, importance)),
             "type": bucket_type,
-            "created": now_iso(),
+            "created": created_override if created_override else now_iso(),
             "last_active": now_iso(),
             "activation_count": 0,
         }

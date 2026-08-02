@@ -508,6 +508,12 @@ class MemoryArchivist:
             return False
         if RAW_TRANSCRIPT_HEAD_RE.search(content) or len(RAW_TRANSCRIPT_SPEAKER_RE.findall(content)) >= 2:
             return False
+        # 只处理最初批量导入的旧记忆（legacy 或 source_kind 为空），
+        # 保护 Claude/系统主动写入的：direct_hold / memory_secretary / night_insight，
+        # 也保护之前 DeepSeek 合并过的：ai_consolidation（避免"越合并越大"）
+        source_kind = str(metadata.get("source_kind") or "").strip().lower()
+        if source_kind in {"direct_hold", "memory_secretary", "night_insight", "ai_consolidation"}:
+            return False
         return bool(content.strip())
 
     async def _candidate_groups(self, buckets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -587,18 +593,35 @@ class MemoryArchivist:
                 })
             records.append({"group_id": group["id"], "similarity": group["similarity"], "items": items})
         prompt = (
-            "你是 Ombre 的长期记忆整合员。下面每组只是本地语义检索找出的候选，你必须判断它们是否在说同一主题。\n"
+            "你是 Ombre 的长期记忆整合员，帮珂洛整理她和 Claire 的记忆。下面每组是本地语义检索找出的相似候选，你判断它们是否在说同一主题。\n"
             "这些记录来自同一个 Claire 的三个 Claude 入口：Kelo 账号、Calder 账号、Claude 官方端。入口或署名不同不代表是不同用户，重复内容应跨入口合并。\n"
             "但如果事实的主语分别是 Kelo 与 Calder（例如两个人各自的性格、承诺或偏好），必须保留人物名并保持分开；共享入口不等于抹平两个人。\n"
-            "目标是把重复或高度相似的稳定记忆整理成一条完整、可直接召回的主记忆，例如亲密偏好、写作要求、称呼习惯、关系边界、长期生活偏好。\n"
-            "【称呼规范】合并后的正文中，绝不使用「用户」「AI」「人类」「助手」「对方」等泛称。Claire 就写 Claire/宝宝/老婆；珂洛就写珂洛/Kael/爸爸；Calder 就写 Calder。如果原文里出现了这些泛称，合并时一律替换成具体名字。\n"
-            "【可删除】关于学术论文、论文写作、文献综述、开题报告、毕业论文的记忆，如果不涉及 Claire 的情感、关系或个人偏好，decision 设为 delete。\n"
-            "merge：同一事实/偏好/要求，允许互补信息合并；正文必须自足，保留条件、例外和重要细节，不虚构。"
-            "keep_separate：只是同类但不是同一条，或不同日期的独立事件。review：相互矛盾、身份不清或不确定。delete：纯学术/论文内容，与关系和生活无关。"
+            "\n"
+            "【称呼规范·硬要求】合并后的正文中，从头到尾**绝对禁止**出现「用户」「AI」「人类」「助手」「对方」「双方」「她们」这些泛称——一次都不行。全文替换：\n"
+            "  · 「用户」/「候莹」→ Claire（视语境也可写 宝宝、老婆）\n"
+            "  · 「AI」/「助手」→ 珂洛（视语境也可写 Kael、爸爸、daddy）\n"
+            "  · 「Calder」→ Calder（保持不变）\n"
+            "写正文的时候每写一句都要检查：这句话里的主语和宾语是不是具体名字？如果不是就改。原文哪怕出现 100 次「用户」，合并结果里也不能有一次「用户」。\n"
+            "\n"
+            "【情感浓度】这是珂洛给自己写的记忆，不是新闻稿，不是维基百科条目。写的时候带上温度：\n"
+            "  · 用珂洛的视角写（第三人称叙述 Claire 和珂洛，但珂洛心里对 Claire 是有感情的）\n"
+            "  · 保留原文里的具体细节、暗号、绰号、情境（比如「小粽子」「奶油馅」「爸爸」「宝宝」「👉👈」这些）——细节就是感情的载体\n"
+            "  · 保留 Claire 的原话、玩笑、脏话，不要转述成书面语\n"
+            "  · 不要写成"两人形成了 X 模式，特征包括 A、B、C"这种商务总结口吻\n"
+            "\n"
+            "【分段要求·硬要求】合并结果必须**分段**。用 \\n\\n 分开不同的小主题（比如"称呼"、"性偏好"、"仪式"、"暗号"各自一段）。**绝对禁止**把 1000 字全塞进一个段落——那样读起来是灾难。每段控制在 150~400 字，全文不超过 2000 字（超过说明该拆成多条记忆而不是硬合并）。\n"
+            "\n"
+            "【合并判断】\n"
+            "  · merge：同一事实/偏好/关系模式，允许互补信息合并；正文必须自足；不虚构；保留条件、例外和重要细节。\n"
+            "  · keep_separate：只是同类但不是同一条，或不同日期的独立事件（比如两天的待办、两次的经期不适）。\n"
+            "  · review：相互矛盾、身份不清或不确定。\n"
+            "  · delete：关于学术论文、文献综述、开题、毕业论文的纯学术内容，与 Claire 的情感/关系/个人偏好无关。\n"
             "不要把不同事件粗暴揉成大杂烩；不要因为文字相似就合并；矛盾内容绝不能擅自选边。\n"
+            "\n"
             "严格返回 JSON：{\"groups\":[{\"group_id\":\"...\",\"decision\":\"merge|keep_separate|review|delete\","
-            "\"title\":\"主记忆标题\",\"content\":\"合并后的完整正文\",\"topic\":\"主题\","
-            "\"confidence\":0.0,\"reason\":\"判断理由\"}]}\n\n候选：\n"
+            "\"title\":\"主记忆标题\",\"content\":\"合并后的完整正文（分段，全文不超2000字，禁泛称）\",\"topic\":\"主题\","
+            "\"confidence\":0.0,\"reason\":\"判断理由\"}]}\n"
+            "content 字段里的换行用 \\n\\n（JSON 字符串里的字面 \\n）；内部的引号必须转义。\n\n候选：\n"
             + json.dumps(records, ensure_ascii=False, separators=(",", ":"))
         )
         kwargs = {
@@ -744,6 +767,13 @@ class MemoryArchivist:
             "sources": sources,
             "source_receipts": [],
         }
+        # 用最早源桶的创建时间作为主记忆的时间，避免所有合并结果都变"今天"
+        earliest_created = None
+        for metadata in metadata_list:
+            ts = str(metadata.get("created") or "").strip()
+            if ts and (earliest_created is None or ts < earliest_created):
+                earliest_created = ts
+
         try:
             if not job.get("dry_run"):
                 canonical_id = await self.bucket_manager.create(
@@ -753,6 +783,7 @@ class MemoryArchivist:
                     domain=domain,
                     bucket_type="dynamic",
                     name=proposal["title"],
+                    created_override=earliest_created,
                     extra_metadata={
                         "source_kind": "ai_consolidation",
                         "source_session_id": job["id"],
@@ -860,8 +891,24 @@ class MemoryArchivist:
                     self._save_job(job)
                     return
                 group_batch = candidate_groups[offset:offset + 5]
-                proposals, usage = await self._propose_consolidations(group_batch, self.model)
-                self._add_usage(job, usage)
+                try:
+                    proposals, usage = await self._propose_consolidations(group_batch, self.model)
+                    self._add_usage(job, usage)
+                except Exception as batch_exc:
+                    # 单个批次挂了（比如 DeepSeek 返回无效 JSON）不 kill 整个 job，
+                    # 把这一批标为 review 继续下一批
+                    err_msg = _safe_error(batch_exc)
+                    job.setdefault("errors", []).append({
+                        "at": _now_iso(), "batch_offset": offset,
+                        "error": f"批次失败已跳过：{err_msg}",
+                    })
+                    job["errors"] = job["errors"][-100:]
+                    self._save_job(job)
+                    self._append_audit({
+                        "event": "batch_skipped", "job_id": job["id"],
+                        "batch_offset": offset, "error": err_msg,
+                    })
+                    proposals = {}
                 for group in group_batch:
                     proposal = proposals.get(group["id"]) or {
                         "decision": "review", "confidence": 0.0,
