@@ -824,6 +824,26 @@ async def _breath_packet_item(bucket: dict, match_kind: str = "direct") -> dict:
     }
 
 
+def _evidence_hint(bucket: dict) -> str:
+    """breath 每桶追加一行证据提示：有原文就显示 evidence_id + 一小段预览，没有就诚实标 '无原话备份（历史遗留）'。evidence 桶自身和 feel 桶不加。"""
+    meta = (bucket or {}).get("metadata", {}) or {}
+    if meta.get("source_kind") == "original_evidence":
+        return ""
+    if meta.get("type") == "feel":
+        return ""
+    ev_id = str(meta.get("source_evidence_id") or "").strip()
+    if not ev_id:
+        return "\n📎 无原话备份（历史遗留）"
+    preview = ""
+    quotes = meta.get("evidence_quotes")
+    if isinstance(quotes, list) and quotes and isinstance(quotes[0], dict):
+        preview = str(quotes[0].get("quote") or "").strip().replace("\n", " ")
+    if preview:
+        preview_short = (preview[:60] + "…") if len(preview) > 60 else preview
+        return f"\n📎 原话[evidence:{ev_id}]「{preview_short}」"
+    return f"\n📎 原话[evidence:{ev_id}]"
+
+
 @mcp.tool()
 async def breath(
     query: str = "",
@@ -869,6 +889,7 @@ async def breath(
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                summary += _evidence_hint(b)
                 t = count_tokens_approx(summary)
                 if token_used + t > max_tokens:
                     break
@@ -904,6 +925,7 @@ async def breath(
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 summary += _agent_stance_recall_line(b["metadata"])
+                summary += _evidence_hint(b)
                 pinned_results.append(f"📌 [核心准则] [bucket_id:{b['id']}] {summary}")
             except Exception as e:
                 logger.warning(f"Failed to dehydrate pinned bucket / 钉选桶脱水失败: {e}")
@@ -979,6 +1001,7 @@ async def breath(
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 summary += _agent_stance_recall_line(b["metadata"])
+                summary += _evidence_hint(b)
                 summary_tokens = count_tokens_approx(summary)
                 if summary_tokens > token_budget:
                     break
@@ -1102,6 +1125,7 @@ async def breath(
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
             summary = await dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
             summary += _agent_stance_recall_line(bucket["metadata"])
+            summary += _evidence_hint(bucket)
             summary_tokens = count_tokens_approx(summary)
             if token_used + summary_tokens > max_tokens:
                 break
@@ -1225,6 +1249,32 @@ async def hold(
         "memory_status": "confirmed",
         **canonical_layer,
     }
+
+    # 原文证据：hold 也存一份原话，桶挂 evidence_id 反查
+    # 复用 grow 的 _store_source_evidence，同 digest 会去重
+    evidence_id = ""
+    try:
+        evidence_id, _ = await _store_source_evidence(
+            content,
+            source_surface=source_surface,
+            source_session_id=source_session_id,
+        )
+    except Exception as exc:
+        logger.warning(f"hold: 保存原文证据失败 / evidence capture failed: {exc}")
+
+    if evidence_id:
+        ev_fingerprint = hashlib.sha256(
+            f"{evidence_id}\n{suggested_name}\n{content}".encode("utf-8")
+        ).hexdigest()[:32]
+        provenance.update({
+            "source_evidence_id": evidence_id,
+            "source_fingerprint": ev_fingerprint,
+            "source_message_ids": [f"evidence:{evidence_id}"],
+            "evidence_quotes": [{
+                "message_id": f"evidence:{evidence_id}",
+                "quote": content.strip()[:320],
+            }],
+        })
 
     # --- Pinned buckets bypass merge and are created directly in permanent dir ---
     # --- 钉选桶跳过合并，直接新建到 permanent 目录 ---
