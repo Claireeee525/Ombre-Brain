@@ -1252,31 +1252,9 @@ async def hold(
         **canonical_layer,
     }
 
-    # 原文证据：hold 也存一份原话，桶挂 evidence_id 反查
-    # 复用 grow 的 _store_source_evidence，同 digest 会去重
-    evidence_id = ""
-    try:
-        evidence_id, _ = await _store_source_evidence(
-            content,
-            source_surface=source_surface,
-            source_session_id=source_session_id,
-        )
-    except Exception as exc:
-        logger.warning(f"hold: 保存原文证据失败 / evidence capture failed: {exc}")
-
-    if evidence_id:
-        ev_fingerprint = hashlib.sha256(
-            f"{evidence_id}\n{suggested_name}\n{content}".encode("utf-8")
-        ).hexdigest()[:32]
-        provenance.update({
-            "source_evidence_id": evidence_id,
-            "source_fingerprint": ev_fingerprint,
-            "source_message_ids": [f"evidence:{evidence_id}"],
-            "evidence_quotes": [{
-                "message_id": f"evidence:{evidence_id}",
-                "quote": content.strip()[:320],
-            }],
-        })
+    # hold 不自动存原文证据：官端场景下 hold 的 content 就是我总结好的
+    # 要记的事，不是 Claire 的原话；自动双写会产出复读的 evidence 桶。
+    # 真需要留原话时改用 grow（传完整段落原文），或未来加显式 raw_quote 参数。
 
     # --- Pinned buckets bypass merge and are created directly in permanent dir ---
     # --- 钉选桶跳过合并，直接新建到 permanent 目录 ---
