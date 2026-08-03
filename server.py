@@ -891,7 +891,6 @@ async def breath(
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                summary += _evidence_hint(b)
                 t = count_tokens_approx(summary)
                 if token_used + t > max_tokens:
                     break
@@ -927,7 +926,6 @@ async def breath(
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 summary += _agent_stance_recall_line(b["metadata"])
-                summary += _evidence_hint(b)
                 pinned_results.append(f"📌 [核心准则] [bucket_id:{b['id']}] {summary}")
             except Exception as e:
                 logger.warning(f"Failed to dehydrate pinned bucket / 钉选桶脱水失败: {e}")
@@ -1003,7 +1001,6 @@ async def breath(
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 summary += _agent_stance_recall_line(b["metadata"])
-                summary += _evidence_hint(b)
                 summary_tokens = count_tokens_approx(summary)
                 if summary_tokens > token_budget:
                     break
@@ -1127,7 +1124,6 @@ async def breath(
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
             summary = await dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
             summary += _agent_stance_recall_line(bucket["metadata"])
-            summary += _evidence_hint(bucket)
             summary_tokens = count_tokens_approx(summary)
             if token_used + summary_tokens > max_tokens:
                 break
@@ -2030,11 +2026,11 @@ async def grow(
     if not content or not content.strip():
         return "内容为空，无法整理。"
 
-    evidence_id, evidence_created = await _store_source_evidence(
-        content,
-        source_surface=source_surface,
-        source_session_id=source_session_id,
-    )
+    # evidence 层已撤：官端 grow 拿到的 content 其实是我拼的一段回顾，
+    # 不是真原话；此前把它存成 "原文证据 xxx" 桶等于用假原文骗自己，
+    # 反而在 Herbier 里堆重复卡片。真原文只有小家侧的记忆秘书能拿。
+    # 回到"只拆桶不存原文"的老逻辑。
+    evidence_id, evidence_created = "", False
 
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
@@ -2068,7 +2064,7 @@ async def grow(
             ),
             allow_merge=False,
         )
-        return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
+        return f"待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
 
     # --- Step 1: let API split and organize / 让 API 拆分整理 ---
     try:
@@ -2119,7 +2115,7 @@ async def grow(
             )
             results.append(f"⚠️{item.get('name', '?')}")
 
-    return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
+    return f"待审候选→{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
 
 
 # =============================================================
