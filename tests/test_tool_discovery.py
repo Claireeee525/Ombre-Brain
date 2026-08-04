@@ -37,6 +37,7 @@ EXPECTED_TOOL_ALIASES = {
     "plan_list": ("计划列表", "看板", "plans"),
     "anchor": ("锚定", "坐标系", "coordinate"),
     "release": ("解除锚定", "坐标系", "anchor"),
+    "wakeup_preview": ("醒来预览", "wakeup", "preview"),
     "handoff": ("短期状态", "handoff", "short-term"),
 }
 

@@ -563,7 +563,7 @@ async def breath_hook(request):
         # top 2 unresolved by score
         unresolved = [b for b in all_buckets
                       if not b["metadata"].get("resolved", False)
-                      and b["metadata"].get("type") not in ("permanent", "feel")
+                      and b["metadata"].get("type") not in ("permanent", "feel", "plan", "daily_impression", "weekly_impression")
                       and not b["metadata"].get("pinned")
                       and not b["metadata"].get("protected")
                       and _curator_recallable(b["metadata"], False)]
@@ -618,7 +618,7 @@ async def dream_hook(request):
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         candidates = [
             b for b in all_buckets
-            if b["metadata"].get("type") not in ("permanent", "feel")
+            if b["metadata"].get("type") not in ("permanent", "feel", "plan", "daily_impression", "weekly_impression")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
             and _curator_recallable(b["metadata"], False)
@@ -999,7 +999,7 @@ async def breath(
             and not b["metadata"].get("digested", False)
             and not b["metadata"].get("dont_surface", False)
             and b["id"] not in cooling_ids
-            and b["metadata"].get("type") not in ("permanent", "feel", "plan")
+            and b["metadata"].get("type") not in ("permanent", "feel", "plan", "daily_impression", "weekly_impression")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
             and not b["metadata"].get("anchor", False)
@@ -1070,7 +1070,18 @@ async def breath(
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
                 continue
 
-        if not pinned_results and not dynamic_results:
+        daily_imp, weekly_imp = _impression_buckets(all_buckets)
+        impression_section = ""
+        impression_blocks = [
+            block for block in (
+                _impression_text(daily_imp, "夜航日记"),
+                _impression_text(weekly_imp, "本周我们"),
+            ) if block
+        ]
+        if impression_blocks:
+            impression_section = "=== 最近印象 ===\n" + "\n---\n".join(impression_blocks)
+
+        if not pinned_results and not dynamic_results and not impression_section:
             _log_recall(
                 mode="surfacing", query="", total=len(all_buckets),
                 pinned=len(pinned_results), unresolved=len(unresolved),
@@ -1094,6 +1105,8 @@ async def breath(
                 )
         if dynamic_results:
             parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
+        if impression_section:
+            parts.append(impression_section)
         _log_recall(
             mode="surfacing", query="", total=len(all_buckets),
             pinned=len(pinned_results), unresolved=len(unresolved),
@@ -1149,7 +1162,7 @@ async def breath(
     # --- 上游 v2.10+：digested 只从默认/被动浮现隐藏，显式检索仍可按 query 找回 ---
     matches = [
         b for b in matches
-        if b["metadata"].get("type") != "plan"
+        if b["metadata"].get("type") not in ("plan", "daily_impression", "weekly_impression")
         and _curator_recallable(
             b["metadata"], include_candidates,
             content=b.get("content", ""), recall_mode=recall_mode,
@@ -1660,6 +1673,119 @@ async def release(bucket_id: str) -> str:
     await bucket_mgr.update(bucket_id, anchor=False)
     count, _ = await _anchor_state()
     return f"已解除锚定，它会重新参与默认浮现。当前 {count}/{_ANCHOR_LIMIT}。"
+
+
+def _impression_buckets(all_buckets: list) -> tuple[dict | None, dict | None]:
+    """从全量桶里挑出最近的日印象（夜航日记）与周印象（本周我们）。"""
+    daily = None
+    weekly = None
+    for b in all_buckets:
+        meta = b.get("metadata", {})
+        created = str(meta.get("created") or "")
+        if meta.get("source_kind") == "night_diary":
+            if daily is None or created > str(daily["metadata"].get("created") or ""):
+                daily = b
+        is_weekly = (
+            "周报" in (meta.get("tags") or [])
+            or str(meta.get("name") or "").startswith("本周我们")
+        )
+        if is_weekly:
+            if weekly is None or created > str(weekly["metadata"].get("created") or ""):
+                weekly = b
+    return daily, weekly
+
+
+def _impression_text(bucket: dict | None, label: str, max_chars: int = 700) -> str:
+    if not bucket:
+        return ""
+    meta = bucket.get("metadata", {})
+    created = str(meta.get("created") or "")[:10]
+    content = strip_wikilinks(str(bucket.get("content") or "")).strip()[:max_chars]
+    if not content:
+        return ""
+    return f"【{label} {created}】\n{content}"
+
+
+@mcp.tool()
+async def wakeup_preview(
+    include_daily: bool = True,
+    include_weekly: bool = True,
+    include_core: bool = True,
+    include_unresolved: bool = True,
+    include_somatic: bool = True,
+    max_tokens: int = 4000,
+) -> str:
+    """wakeup_preview 醒来预览 睁眼预览 wakeup preview。【只读】按开关拼出珂洛睁眼会看到的内容（JSON：分节文本+token数），不标记冷却、不改变记忆状态，供小家"醒来看看"控制台预览。"""
+    try:
+        max_tokens = max(500, min(int(max_tokens or 4000), 20000))
+    except (TypeError, ValueError):
+        max_tokens = 4000
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        return _json_lib.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+    sections = {}
+    daily_imp, weekly_imp = _impression_buckets(all_buckets)
+    if include_daily and daily_imp:
+        text = _impression_text(daily_imp, "夜航日记")
+        if text:
+            sections["daily_impression"] = {"label": "日印象·夜航日记", "text": text, "tokens": count_tokens_approx(text)}
+    if include_weekly and weekly_imp:
+        text = _impression_text(weekly_imp, "本周我们")
+        if text:
+            sections["weekly_impression"] = {"label": "周印象·本周我们", "text": text, "tokens": count_tokens_approx(text)}
+
+    if include_core:
+        core = [
+            b for b in all_buckets
+            if (b["metadata"].get("pinned") or b["metadata"].get("protected") or b["metadata"].get("type") == "permanent")
+            and not b["metadata"].get("digested", False)
+            and not b["metadata"].get("dont_surface", False)
+        ]
+        core.sort(key=lambda b: int(b["metadata"].get("importance") or 0), reverse=True)
+        core_text = "\n---\n".join(
+            f"📌 [核心准则] {strip_wikilinks(str(b.get('content') or ''))[:400]}"
+            for b in core[:3]
+        )
+        if core_text:
+            sections["core"] = {"label": "核心准则", "text": core_text, "tokens": count_tokens_approx(core_text)}
+
+    if include_unresolved:
+        unresolved = [
+            b for b in all_buckets
+            if not b["metadata"].get("resolved", False)
+            and not b["metadata"].get("digested", False)
+            and not b["metadata"].get("dont_surface", False)
+            and not b["metadata"].get("anchor", False)
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+            and b["metadata"].get("type") not in ("permanent", "feel", "plan", "daily_impression", "weekly_impression")
+        ]
+        unresolved.sort(key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
+        un_text = "\n---\n".join(
+            f"[权重:{decay_engine.calculate_score(b['metadata']):.2f}] {strip_wikilinks(str(b.get('content') or ''))[:400]}"
+            for b in unresolved[:2]
+        )
+        if un_text:
+            sections["unresolved"] = {"label": "未解决事项", "text": un_text, "tokens": count_tokens_approx(un_text)}
+
+    if include_somatic:
+        try:
+            somatic_text = await somatic_read()
+            if somatic_text and "没有留下" not in somatic_text[:40]:
+                sections["somatic"] = {"label": "身体此刻", "text": somatic_text[:1200], "tokens": count_tokens_approx(somatic_text[:1200])}
+        except Exception as e:
+            logger.warning(f"wakeup_preview somatic failed / 醒来预览身体读取失败: {e}")
+
+    total = sum(int(s["tokens"]) for s in sections.values())
+    return _json_lib.dumps({
+        "ok": True,
+        "total_tokens": total,
+        "max_tokens": max_tokens,
+        "sections": sections,
+        "notes": "预览只读：不标记冷却、不改变任何记忆状态；正式睁眼以 breath() 为准。",
+    }, ensure_ascii=False, separators=(",", ":"))
 
 
 # =============================================================
@@ -3820,7 +3946,7 @@ async def dream(window_hours: int = 48) -> str:
     # --- Filter: windowed surface-level dynamic buckets, excluding hidden/anchor/plan ---
     candidates = [
         b for b in all_buckets
-        if b["metadata"].get("type") not in ("permanent", "feel", "plan")
+        if b["metadata"].get("type") not in ("permanent", "feel", "plan", "daily_impression", "weekly_impression")
         and not b["metadata"].get("pinned", False)
         and not b["metadata"].get("protected", False)
         and not b["metadata"].get("digested", False)
