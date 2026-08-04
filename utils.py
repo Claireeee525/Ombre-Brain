@@ -62,7 +62,8 @@ def load_config(config_path: str = None) -> dict:
             },
         },
         "surfacing": {
-            "max_dynamic_per_call": 1,
+            "max_dynamic_per_call": 2,
+            "max_pinned_per_call": 3,
             "cooldown_rounds": 60,
         },
         "matching": {
@@ -107,6 +108,14 @@ def load_config(config_path: str = None) -> dict:
     env_base_url = os.environ.get("OMBRE_BASE_URL", "")
     if env_base_url:
         config.setdefault("dehydration", {})["base_url"] = env_base_url
+
+    env_max_dynamic = os.environ.get("OMBRE_SURFACING_MAX_DYNAMIC_PER_CALL", "")
+    if env_max_dynamic:
+        config.setdefault("surfacing", {})["max_dynamic_per_call"] = max(1, int(env_max_dynamic))
+
+    env_max_pinned = os.environ.get("OMBRE_SURFACING_MAX_PINNED_PER_CALL", "")
+    if env_max_pinned:
+        config.setdefault("surfacing", {})["max_pinned_per_call"] = max(1, int(env_max_pinned))
 
     env_transport = os.environ.get("OMBRE_TRANSPORT", "")
     if env_transport:

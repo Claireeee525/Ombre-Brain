@@ -174,7 +174,6 @@ def test_herbier_full_catalogue_lenses_use_bucket_metadata():
 
 @pytest.mark.asyncio
 async def test_breath_packet_preserves_provenance_and_render_rules(monkeypatch):
-    monkeypatch.setattr(server.dehydrator, "dehydrate", lambda content, meta: _async_value("相关记忆摘要"))
     bucket = {
         "id": "bucket-1",
         "content": "Claire 当时说过的原话。",
@@ -205,8 +204,8 @@ async def test_breath_packet_preserves_provenance_and_render_rules(monkeypatch):
         "render_kind": "original",
         "why_recalled": "关键词直接命中",
     }
-    assert related["summary"] == "相关记忆摘要"
-    assert related["render_kind"] == "summary"
+    assert related["summary"] == "Claire 当时说过的原话。"
+    assert related["render_kind"] == "original"
     assert related["match_kind"] == "related"
 
 

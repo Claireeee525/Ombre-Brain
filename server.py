@@ -781,15 +781,10 @@ async def _breath_packet_item(bucket: dict, match_kind: str = "direct") -> dict:
     title = str(meta.get("name") or "").strip()
     if not title:
         title = re.sub(r"\s+", " ", content).strip()[:60] or "未命名记忆"
-    if match_kind == "related":
-        clean_meta = {key: value for key, value in meta.items() if key != "tags"}
-        summary = await dehydrator.dehydrate(content, clean_meta)
-        render_kind = "summary"
-        why_recalled = "语义关联"
-    else:
-        summary = content[:1200]
-        render_kind = "original" if len(content) <= 1200 else "window"
-        why_recalled = "关键词直接命中"
+    # 检索包同样逐字返回：直接命中与语义关联都不再过 LLM，避免摘要失败吞结果。
+    summary = content[:1200]
+    render_kind = "original" if len(content) <= 1200 else "window"
+    why_recalled = "关键词直接命中" if match_kind == "direct" else "语义关联"
     speakers = meta.get("evidence_speakers") or []
     if isinstance(speakers, str):
         speakers = [speakers]
@@ -853,7 +848,7 @@ def _evidence_hint(bucket: dict) -> str:
 # 用于回答「为什么她问 X 我没想起来」这类问题，而不是靠猜。
 # =============================================================
 _RECALL_LOG_MAX = 40
-_MAX_PINNED_SURFACE = 5  # 每次 breath 浮现最多置顶几条核心准则
+_DEFAULT_MAX_PINNED_SURFACE = 3  # 每次 breath 浮现最多置顶几条核心准则（config surfacing.max_pinned_per_call 可调）
 _recall_log: list[dict] = []
 
 
@@ -960,7 +955,8 @@ async def breath(
         round_no = cooldown.next_round() if cooldown else 0
         cooling_ids = cooldown.cooling_ids(round_no) if cooldown else set()
         surfacing_cfg = config.get("surfacing", {}) or {}
-        max_dynamic = max(1, int(surfacing_cfg.get("max_dynamic_per_call", 1)))
+        max_dynamic = max(1, int(surfacing_cfg.get("max_dynamic_per_call", 2)))
+        max_pinned_surface = max(1, int(surfacing_cfg.get("max_pinned_per_call", _DEFAULT_MAX_PINNED_SURFACE)))
 
         # --- Pinned/protected buckets: always surface as core principles ---
         # --- 钉选桶：作为核心准则，始终浮现 ---
@@ -975,14 +971,14 @@ async def breath(
             )
         ]
         # --- Core principles cap: 钉选是"每次都要在场"的宪法级内容，不是全集 ---
-        # --- 每次浮现最多放 _MAX_PINNED_SURFACE 条，其余靠 breath_search/Herbier 查 ---
-        omitted_pinned = max(0, len(pinned_buckets) - _MAX_PINNED_SURFACE)
+        # --- 每次浮现最多放 max_pinned_surface 条，其余靠 breath_search/Herbier 查 ---
+        omitted_pinned = max(0, len(pinned_buckets) - max_pinned_surface)
         if omitted_pinned:
             logger.info(
                 f"Breath surfacing: {omitted_pinned} pinned buckets omitted by cap "
-                f"{_MAX_PINNED_SURFACE}"
+                f"{max_pinned_surface}"
             )
-        pinned_buckets = pinned_buckets[:_MAX_PINNED_SURFACE]
+        pinned_buckets = pinned_buckets[:max_pinned_surface]
         pinned_results = []
         for b in pinned_buckets:
             try:
@@ -1038,27 +1034,17 @@ async def breath(
         scored_deduped = [b for b in scored if b["id"] not in cold_start_ids]
         scored_with_cold = cold_start + scored_deduped
 
-        # --- Token-budgeted surfacing with diversity + hard cap ---
-        # --- 按 token 预算浮现，带多样性 + 硬上限 ---
-        # Top-1 always surfaces; rest sampled from top-20 for diversity
+        # --- Token-budgeted surfacing with hard cap ---
+        # --- 按 token 预算浮现，硬上限 ---
+        # 去掉纯随机洗牌：冷启动优先，其余按衰减分降序，冷却表 60 轮防复读。
         token_budget = max_tokens
         for r in pinned_results:
             token_budget -= count_tokens_approx(r)
 
         candidates = list(scored_with_cold)
-        if len(candidates) > 1:
-            # Cold-start buckets stay at front; shuffle rest from top-20
-            n_cold = len(cold_start)
-            non_cold = candidates[n_cold:]
-            if len(non_cold) > 1:
-                top1 = [non_cold[0]]
-                pool = non_cold[1:min(20, len(non_cold))]
-                random.shuffle(pool)
-                non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
-            candidates = cold_start + non_cold
         # Hard cap: never surface more than max_results buckets
         candidates = candidates[:max_results]
-        # 教程铁律：每轮最多浮现 1 条普通记忆，宁可闭嘴不许硬凑
+        # 每轮最多浮现 max_dynamic 条普通记忆（默认 2，可配置），冷却防复读
         candidates = candidates[:max_dynamic]
 
         dynamic_results = []
@@ -1157,14 +1143,11 @@ async def breath(
         logger.error(f"Search failed / 检索失败: {e}")
         return "检索过程出错，请稍后重试。"
 
-    # --- Exclude pinned/protected from search results (they surface in surfacing mode) ---
-    # --- 搜索模式排除钉选桶（它们在浮现模式中始终可见）---
+    # --- 检索保留全部有效记忆：钉选也是记忆，digested/dont_surface 只隐藏被动浮现 ---
+    # --- 上游 v2.10+：digested 只从默认/被动浮现隐藏，显式检索仍可按 query 找回 ---
     matches = [
         b for b in matches
-        if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
-        and not b["metadata"].get("digested", False)
-        and not b["metadata"].get("dont_surface", False)
-        and _curator_recallable(
+        if _curator_recallable(
             b["metadata"], include_candidates,
             content=b.get("content", ""), recall_mode=recall_mode,
         )
@@ -1211,31 +1194,39 @@ async def breath(
     except Exception as e:
         logger.warning(f"Family assembly failed / 家族拼装失败: {e}")
 
+    omitted = 0
     for bucket in matches:
         if token_used >= max_tokens:
             break
         try:
-            clean_meta = {k: v for k, v in bucket["metadata"].items() if k != "tags"}
-            # --- Memory reconstruction: shift displayed valence by current mood ---
-            # --- 记忆重构：根据当前情绪微调展示层 valence（±0.1）---
-            if q_valence is not None and "valence" in clean_meta:
-                original_v = float(clean_meta.get("valence", 0.5))
-                shift = (q_valence - 0.5) * 0.2  # ±0.1 max shift
-                clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
-            summary = await dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
-            summary += _agent_stance_recall_line(bucket["metadata"])
-            summary_tokens = count_tokens_approx(summary)
-            if token_used + summary_tokens > max_tokens:
-                break
+            # 检索命中逐字返回存储原文，不经过 LLM 摘要：更快、更可靠、不丢字。
+            content = strip_wikilinks(str(bucket.get("content") or "")).strip()
+            if not content:
+                continue
+            created = str(bucket["metadata"].get("created") or "")[:10]
+            head = f"[bucket_id:{bucket['id']}]"
+            if created:
+                head += f" [日期:{created}]"
             if bucket.get("vector_match"):
-                summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
-            else:
-                summary = f"[bucket_id:{bucket['id']}] {summary}"
-            results.append(summary)
-            token_used += summary_tokens
+                head = f"[语义关联] {head}"
+            if bucket["metadata"].get("digested"):
+                head += " [已消化，仍可检索]"
+            stance = _agent_stance_recall_line(bucket["metadata"])
+            rendered = f"{head} {content}"
+            if stance:
+                rendered += f"\n{stance}"
+            rendered_tokens = count_tokens_approx(rendered)
+            if token_used + rendered_tokens > max_tokens:
+                omitted += 1
+                break
+            results.append(rendered)
+            token_used += rendered_tokens
         except Exception as e:
-            logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
+            logger.warning(f"Failed to render search result / 检索结果渲染失败: {e}")
             continue
+
+    if omitted:
+        results.append(f"[token 预算不足：还有 {omitted} 条命中未列出，可提高 max_tokens 后重试]")
 
     if not results:
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})

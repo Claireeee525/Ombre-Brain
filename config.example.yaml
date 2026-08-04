@@ -69,6 +69,12 @@ decay:
     base: 1.0                     # Base weight / 基础权重
     arousal_boost: 0.8            # Arousal boost coefficient / 唤醒度加成系数
 
+# --- Surfacing / 浮现参数 ---
+surfacing:
+  max_dynamic_per_call: 2         # Max ordinary memories per breath / 每次 breath 浮现的普通记忆上限
+  max_pinned_per_call: 3          # Max pinned core principles per breath / 每次 breath 浮现的钉选上限
+  cooldown_rounds: 60             # ID-level cooldown window / 同一条记忆冷却轮数
+
 # --- Embedding / 向量化配置 ---
 # Uses embedding API for semantic similarity search
 # 通过 embedding API 实现语义相似度搜索

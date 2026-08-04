@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import server
+import utils
 from bucket_manager import BucketManager
 
 
@@ -24,6 +25,22 @@ def _bucket(bucket_id, content, *, name="记忆", importance=5, bucket_type="dyn
             "memory_status": "confirmed",
         },
     }
+
+
+def test_surfacing_builtin_defaults_are_two_dynamic_and_three_pinned(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMBRE_SURFACING_MAX_DYNAMIC_PER_CALL", raising=False)
+    monkeypatch.delenv("OMBRE_SURFACING_MAX_PINNED_PER_CALL", raising=False)
+    cfg = utils.load_config(str(tmp_path / "missing.yaml"))
+    assert cfg["surfacing"]["max_dynamic_per_call"] == 2
+    assert cfg["surfacing"]["max_pinned_per_call"] == 3
+
+
+def test_surfacing_env_overrides_builtin_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMBRE_SURFACING_MAX_DYNAMIC_PER_CALL", "4")
+    monkeypatch.setenv("OMBRE_SURFACING_MAX_PINNED_PER_CALL", "5")
+    cfg = utils.load_config(str(tmp_path / "missing.yaml"))
+    assert cfg["surfacing"]["max_dynamic_per_call"] == 4
+    assert cfg["surfacing"]["max_pinned_per_call"] == 5
 
 
 @pytest.mark.asyncio
@@ -87,15 +104,37 @@ async def test_query_recall_is_read_only_and_never_self_reinforces(monkeypatch):
     manager = _BreathManager([_bucket("match", "冰茉莉开花了。")])
     monkeypatch.setattr(server, "bucket_mgr", manager)
     monkeypatch.setattr(server.decay_engine, "ensure_started", AsyncMock())
-    monkeypatch.setattr(server.dehydrator, "dehydrate", AsyncMock(return_value="冰茉莉摘要"))
+    monkeypatch.setattr(server.dehydrator, "dehydrate", AsyncMock(side_effect=AssertionError("query recall must not call LLM dehydration")))
     monkeypatch.setattr(server.family_engine, "families_for", lambda bucket_ids: {})
     monkeypatch.setattr(server, "_fire_webhook", AsyncMock())
 
     result = await server.breath(query="冰茉莉")
 
-    assert "冰茉莉摘要" in result
+    # 检索逐字返回原文，不经 LLM 摘要
+    assert "冰茉莉开花了。" in result
     manager.touch.assert_not_awaited()
     manager.list_all.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_digested_and_pinned_memories(monkeypatch):
+    manager = _BreathManager([
+        _bucket("digested", "那次体检的结论。", name="体检"),
+        _bucket("pinned", "我们之间的一条核心约定。", name="约定"),
+    ])
+    manager.results[0]["metadata"]["digested"] = True
+    manager.results[1]["metadata"]["pinned"] = True
+    manager.results[1]["metadata"]["protected"] = True
+    monkeypatch.setattr(server, "bucket_mgr", manager)
+    monkeypatch.setattr(server.decay_engine, "ensure_started", AsyncMock())
+    monkeypatch.setattr(server.family_engine, "families_for", lambda bucket_ids: {})
+    monkeypatch.setattr(server, "_fire_webhook", AsyncMock())
+
+    result = await server.breath(query="体检 约定")
+
+    assert "那次体检的结论。" in result
+    assert "我们之间的一条核心约定。" in result
+    assert "已消化，仍可检索" in result
 
 
 @pytest.mark.asyncio

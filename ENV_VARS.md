@@ -24,6 +24,8 @@
 | `OMBRE_MODEL` | 否 | — | `OMBRE_DEHYDRATION_MODEL` 的别名（前者优先） |
 | `OMBRE_EMBEDDING_MODEL` | 否 | `gemini-embedding-001` | 向量嵌入模型名（覆盖 `embedding.model`） |
 | `OMBRE_EMBEDDING_BASE_URL` | 否 | — | 向量嵌入的 API Base URL（覆盖 `embedding.base_url`；留空则复用脱水配置） |
+| `OMBRE_SURFACING_MAX_DYNAMIC_PER_CALL` | 否 | `2` | 每次 breath 浮现的普通记忆上限（覆盖 `surfacing.max_dynamic_per_call`） |
+| `OMBRE_SURFACING_MAX_PINNED_PER_CALL` | 否 | `3` | 每次 breath 浮现的钉选核心准则上限（覆盖 `surfacing.max_pinned_per_call`） |
 
 ## 说明
 
