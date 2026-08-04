@@ -846,6 +846,23 @@ def _evidence_hint(bucket: dict) -> str:
     return f"\n📎 原话[evidence:{ev_id}]"
 
 
+# =============================================================
+# Recall routing log（环形 buffer，最近 40 条）
+# 每次浮现/检索决策都记一行：翻了没翻、query、命中数、被哪道闸拦住。
+# 用于回答「为什么她问 X 我没想起来」这类问题，而不是靠猜。
+# =============================================================
+_RECALL_LOG_MAX = 40
+_MAX_PINNED_SURFACE = 5  # 每次 breath 浮现最多置顶几条核心准则
+_recall_log: list[dict] = []
+
+
+def _log_recall(**fields) -> None:
+    entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **fields}
+    _recall_log.append(entry)
+    if len(_recall_log) > _RECALL_LOG_MAX:
+        del _recall_log[: len(_recall_log) - _RECALL_LOG_MAX]
+
+
 @mcp.tool()
 async def breath(
     query: str = "",
@@ -859,7 +876,7 @@ async def breath(
     recall_mode: str = "normal",
     response_format: str = "text",
 ) -> str:
-    """breath 记忆检索 浮现 recall memory。【Claire 提到过去、或你想主动引一段往事、或开场想带着记忆说话时，就调用它】检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。默认只召回有效记忆；recall_mode可选normal/evidence/review/handoff/accompany，分别读取有效记忆、原文证据、待审候选、短期线头、Feel/Dream伴随层。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。response_format可选text或packet；packet只用于有query的结构化召回，包含bucket_id、来源、日期与命中类型。"""
+    """breath 记忆浮现 睁眼 surface recall memory。【对话开场或想主动引一段往事时调用；要找过去某件事请改用 breath_search】不传query或传空=自动浮现：置顶少量核心准则+按权重浮现未解决记忆；已消化(digested)、已沉底(resolved)、dont_surface 不浮现。有query=关键词检索（日常查证请用 breath_search）。默认只召回有效记忆；recall_mode可选normal/evidence/review/handoff/accompany，分别读取有效记忆、原文证据、待审候选、短期线头、Feel/Dream伴随层。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。response_format可选text或packet；packet只用于有query的结构化召回，包含bucket_id、来源、日期与命中类型。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -915,11 +932,22 @@ async def breath(
         pinned_buckets = [
             b for b in all_buckets
             if (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+            and not b["metadata"].get("digested", False)
+            and not b["metadata"].get("dont_surface", False)
             and _curator_recallable(
                 b["metadata"], include_candidates,
                 content=b.get("content", ""), recall_mode=recall_mode,
             )
         ]
+        # --- Core principles cap: 钉选是"每次都要在场"的宪法级内容，不是全集 ---
+        # --- 每次浮现最多放 _MAX_PINNED_SURFACE 条，其余靠 breath_search/Herbier 查 ---
+        omitted_pinned = max(0, len(pinned_buckets) - _MAX_PINNED_SURFACE)
+        if omitted_pinned:
+            logger.info(
+                f"Breath surfacing: {omitted_pinned} pinned buckets omitted by cap "
+                f"{_MAX_PINNED_SURFACE}"
+            )
+        pinned_buckets = pinned_buckets[:_MAX_PINNED_SURFACE]
         pinned_results = []
         for b in pinned_buckets:
             try:
@@ -936,6 +964,8 @@ async def breath(
         unresolved = [
             b for b in all_buckets
             if not b["metadata"].get("resolved", False)
+            and not b["metadata"].get("digested", False)
+            and not b["metadata"].get("dont_surface", False)
             and b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
@@ -1013,13 +1043,28 @@ async def breath(
                 continue
 
         if not pinned_results and not dynamic_results:
+            _log_recall(
+                mode="surfacing", query="", total=len(all_buckets),
+                pinned=len(pinned_results), unresolved=len(unresolved),
+                returned=0, omitted_pinned=omitted_pinned, skip="no_qualified",
+            )
             return "权重池平静，没有需要处理的记忆。"
 
         parts = []
         if pinned_results:
             parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_results))
+            if omitted_pinned:
+                parts.append(
+                    f"（另有 {omitted_pinned} 条钉选核心准则未列出，"
+                    "需要时用 breath_search 或去 Herbier 查看）"
+                )
         if dynamic_results:
             parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
+        _log_recall(
+            mode="surfacing", query="", total=len(all_buckets),
+            pinned=len(pinned_results), unresolved=len(unresolved),
+            returned=len(dynamic_results), omitted_pinned=omitted_pinned,
+        )
         return "\n\n".join(parts)
 
     # --- Feel retrieval: domain="feel" is a special channel ---
@@ -1068,11 +1113,17 @@ async def breath(
     matches = [
         b for b in matches
         if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+        and not b["metadata"].get("digested", False)
+        and not b["metadata"].get("dont_surface", False)
         and _curator_recallable(
             b["metadata"], include_candidates,
             content=b.get("content", ""), recall_mode=recall_mode,
         )
     ]
+    _log_recall(
+        mode="search", query=str(query)[:200], matches=len(matches),
+        returned=0, stage="search",
+    )
 
     if str(response_format or "text").strip().lower() == "packet":
         packet_items = []
@@ -1139,11 +1190,50 @@ async def breath(
 
     if not results:
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
+        _log_recall(
+            mode="search", query=str(query)[:200], matches=len(matches),
+            returned=0, skip="no_results",
+        )
         return "未找到相关记忆。"
 
     final_text = "\n---\n".join(results)
     await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "chars": len(final_text)})
+    _log_recall(
+        mode="search", query=str(query)[:200], matches=len(matches),
+        returned=len(results),
+    )
     return final_text
+
+
+@mcp.tool()
+async def breath_search(
+    query: str,
+    max_results: int = 20,
+    max_tokens: int = 10000,
+    domain: str = "",
+    recall_mode: str = "normal",
+) -> str:
+    """breath_search 记忆检索 查证 search recall query memory。【要找过去某件事、某个名词、某段经历时调用；日常查证请用它，不要把 breath 当搜索用】按关键词/语义双通道检索，不混入钉选核心准则；结果逐条带 bucket_id 与日期。max_results 控制数量上限(默认20,最大50)，max_tokens 控制总token上限(默认10000)，domain 逗号分隔按主题域预筛，recall_mode 同 breath。"""
+    return await breath(
+        query=query,
+        max_results=max_results,
+        max_tokens=max_tokens,
+        domain=domain,
+        recall_mode=recall_mode,
+        response_format="text",
+    )
+
+
+@mcp.tool()
+async def recall_log(limit: int = 40) -> str:
+    """recall_log 召回日志 路由日志 routing recall log。【只读】返回最近 40 条召回/浮现决策（环形 buffer），每条含时间、模式、query、命中数与跳过原因，用来排查"为什么想起了/为什么没想起"。"""
+    size = max(1, min(int(limit or 40), 200))
+    items = list(_recall_log)[-size:]
+    return _json_lib.dumps(
+        {"read_only": True, "total": len(_recall_log), "items": items},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 # =============================================================

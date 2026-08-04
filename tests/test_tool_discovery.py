@@ -9,7 +9,10 @@ import server
 
 
 EXPECTED_TOOL_ALIASES = {
-    "breath": ("记忆检索", "recall", "memory"),
+    "breath": ("记忆浮现", "recall", "memory"),
+    "breath_search": ("记忆检索", "search", "query"),
+    "recall_log": ("召回日志", "routing", "log"),
+    "cleanup": ("清扫", "影子文件", "macos"),
     "source_read": ("原文证据", "exact", "source"),
     "embedding_queue": ("向量重试", "embedding", "queue"),
     "hold": ("保存", "remember", "memory"),
