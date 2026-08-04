@@ -76,6 +76,7 @@ from memory_layers import (
 )
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 from oauth_provider import OmbreOAuthProvider, install_oauth_login_routes
+from recall_cooldown import RecallCooldown
 import somatic_state
 import nudge_engine
 import family_engine
@@ -863,6 +864,30 @@ def _log_recall(**fields) -> None:
         del _recall_log[: len(_recall_log) - _RECALL_LOG_MAX]
 
 
+_recall_cooldown: RecallCooldown | None = None
+
+
+def _get_recall_cooldown() -> RecallCooldown | None:
+    """懒加载冷却表；失败时降级为"无冷却"，不阻塞浮现。"""
+    global _recall_cooldown
+    if _recall_cooldown is not None:
+        return _recall_cooldown
+    try:
+        surfacing_cfg = config.get("surfacing", {}) or {}
+        window = max(1, int(surfacing_cfg.get("cooldown_rounds", 60)))
+        db_path = os.path.join(
+            config.get("buckets_dir", "buckets"), "recall_cooldown.sqlite3"
+        )
+        _recall_cooldown = RecallCooldown(db_path, window=window)
+        return _recall_cooldown
+    except Exception as e:
+        logger.warning(
+            f"Recall cooldown unavailable, falling back to no cooldown / "
+            f"冷却表不可用，退回无冷却: {e}"
+        )
+        return None
+
+
 @mcp.tool()
 async def breath(
     query: str = "",
@@ -927,6 +952,14 @@ async def breath(
             logger.error(f"Failed to list buckets for surfacing / 浮现列桶失败: {e}")
             return "记忆系统暂时无法访问。"
 
+        # --- ID 级冷却：最近 60 轮浮现过的普通记忆不重复浮现 ---
+        # --- 冷却落 SQLite，重启不丢；钉选核心不参与冷却（由预算上限控制）---
+        cooldown = _get_recall_cooldown()
+        round_no = cooldown.next_round() if cooldown else 0
+        cooling_ids = cooldown.cooling_ids(round_no) if cooldown else set()
+        surfacing_cfg = config.get("surfacing", {}) or {}
+        max_dynamic = max(1, int(surfacing_cfg.get("max_dynamic_per_call", 1)))
+
         # --- Pinned/protected buckets: always surface as core principles ---
         # --- 钉选桶：作为核心准则，始终浮现 ---
         pinned_buckets = [
@@ -966,6 +999,7 @@ async def breath(
             if not b["metadata"].get("resolved", False)
             and not b["metadata"].get("digested", False)
             and not b["metadata"].get("dont_surface", False)
+            and b["id"] not in cooling_ids
             and b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
@@ -1022,8 +1056,11 @@ async def breath(
             candidates = cold_start + non_cold
         # Hard cap: never surface more than max_results buckets
         candidates = candidates[:max_results]
+        # 教程铁律：每轮最多浮现 1 条普通记忆，宁可闭嘴不许硬凑
+        candidates = candidates[:max_dynamic]
 
         dynamic_results = []
+        surfaced_ids = []
         for b in candidates:
             if token_budget <= 0:
                 break
@@ -1037,6 +1074,7 @@ async def breath(
                 # NOTE: no touch() here — surfacing should NOT reset decay timer
                 score = decay_engine.calculate_score(b["metadata"])
                 dynamic_results.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}")
+                surfaced_ids.append(b["id"])
                 token_budget -= summary_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
@@ -1047,8 +1085,14 @@ async def breath(
                 mode="surfacing", query="", total=len(all_buckets),
                 pinned=len(pinned_results), unresolved=len(unresolved),
                 returned=0, omitted_pinned=omitted_pinned, skip="no_qualified",
+                round=round_no, cooling=len(cooling_ids), max_dynamic=max_dynamic,
             )
             return "权重池平静，没有需要处理的记忆。"
+
+        if cooldown and surfaced_ids:
+            cooldown.mark(surfaced_ids, round_no)
+        if cooldown:
+            cooldown.prune(round_no)
 
         parts = []
         if pinned_results:
@@ -1064,6 +1108,7 @@ async def breath(
             mode="surfacing", query="", total=len(all_buckets),
             pinned=len(pinned_results), unresolved=len(unresolved),
             returned=len(dynamic_results), omitted_pinned=omitted_pinned,
+            round=round_no, cooling=len(cooling_ids), max_dynamic=max_dynamic,
         )
         return "\n\n".join(parts)
 

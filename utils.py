@@ -61,6 +61,10 @@ def load_config(config_path: str = None) -> dict:
                 "arousal_boost": 0.8,
             },
         },
+        "surfacing": {
+            "max_dynamic_per_call": 1,
+            "cooldown_rounds": 60,
+        },
         "matching": {
             "fuzzy_threshold": 50,
             "max_results": 5,
