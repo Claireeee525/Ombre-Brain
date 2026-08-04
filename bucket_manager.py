@@ -30,7 +30,7 @@ import math
 import logging
 import shutil
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +41,31 @@ from memory_layers import memory_recallable
 from utils import generate_bucket_id, sanitize_name, safe_path, now_iso
 
 logger = logging.getLogger("ombre_brain.bucket")
+
+
+def _date_arg(value) -> str:
+    """把 YYYY-MM-DD 或 ISO 时间串规整成日期，非法返回空串。"""
+    raw = str(value or "").strip()
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})", raw)
+    return match.group(1) if match else ""
+
+
+def _shift_date(date_str: str, days: int) -> str:
+    return (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _bucket_date_in_window(meta: dict, date_from: str, date_to: str) -> bool:
+    """记忆日期取 valid_from（无则 created），窗口软过滤 ±1 天。"""
+    raw = str(meta.get("valid_from") or meta.get("created") or "").strip()
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})", raw)
+    bucket_date = match.group(1) if match else ""
+    if not bucket_date:
+        return not date_from and not date_to
+    if date_from and bucket_date < _shift_date(date_from, -1):
+        return False
+    if date_to and bucket_date > _shift_date(date_to, 1):
+        return False
+    return True
 
 
 class BucketManager:
@@ -546,6 +571,8 @@ class BucketManager:
         domain_filter: list[str] = None,
         query_valence: float = None,
         query_arousal: float = None,
+        date_from: str = "",
+        date_to: str = "",
         include_candidates: bool = False,
         recall_mode: str = "normal",
     ) -> list[dict]:
@@ -554,6 +581,7 @@ class BucketManager:
         多维索引搜索记忆桶。
 
         domain_filter: pre-filter by domain (None = search all)
+        date_from/date_to: soft date window on valid_from/created (±1 day, falls back to full set)
         query_valence/arousal: emotion coordinates for resonance scoring
         """
         if not query or not query.strip():
@@ -587,6 +615,23 @@ class BucketManager:
                 candidates = all_buckets
         else:
             candidates = all_buckets
+
+        # --- Date window (soft): "昨天/上周" 按日期收窄候选集 ---
+        # --- 窗口 ±1 天；窗口内无命中则回落全集，不全灭 ---
+        norm_from = _date_arg(date_from)
+        norm_to = _date_arg(date_to)
+        if norm_from or norm_to:
+            windowed = [
+                b for b in candidates
+                if _bucket_date_in_window(b.get("metadata", {}), norm_from, norm_to)
+            ]
+            if windowed:
+                candidates = windowed
+            else:
+                logger.info(
+                    "Date window yielded no buckets; falling back to full set / "
+                    "日期窗口无命中，回落全集"
+                )
 
         # --- Layer 1.5: semantic evidence (optional, never a blind pre-filter) ---
         # Exact keyword hits must remain reachable even when the embedding

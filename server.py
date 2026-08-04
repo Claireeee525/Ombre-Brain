@@ -895,13 +895,15 @@ async def breath(
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
+    date_from: str = "",
+    date_to: str = "",
     max_results: int = 20,
     importance_min: int = -1,
     include_candidates: bool = False,
     recall_mode: str = "normal",
     response_format: str = "text",
 ) -> str:
-    """breath 记忆浮现 睁眼 surface recall memory。【对话开场或想主动引一段往事时调用；要找过去某件事请改用 breath_search】不传query或传空=自动浮现：置顶少量核心准则+按权重浮现未解决记忆；已消化(digested)、已沉底(resolved)、dont_surface 不浮现。有query=关键词检索（日常查证请用 breath_search）。默认只召回有效记忆；recall_mode可选normal/evidence/review/handoff/accompany，分别读取有效记忆、原文证据、待审候选、短期线头、Feel/Dream伴随层。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。response_format可选text或packet；packet只用于有query的结构化召回，包含bucket_id、来源、日期与命中类型。"""
+    """breath 记忆浮现 睁眼 surface recall memory。【对话开场或想主动引一段往事时调用；要找过去某件事请改用 breath_search】不传query或传空=自动浮现：置顶少量核心准则+按权重浮现未解决记忆；已消化(digested)、已沉底(resolved)、dont_surface 不浮现。有query=关键词检索（日常查证请用 breath_search）。date_from/date_to 按记忆日期(valid_from/created)过滤，支持 YYYY-MM-DD 或 ISO 8601，±1 天软窗口，窗口无命中回落全集。默认只召回有效记忆；recall_mode可选normal/evidence/review/handoff/accompany，分别读取有效记忆、原文证据、待审候选、短期线头、Feel/Dream伴随层。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。response_format可选text或packet；packet只用于有query的结构化召回，包含bucket_id、来源、日期与命中类型。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1146,6 +1148,8 @@ async def breath(
             domain_filter=domain_filter,
             query_valence=q_valence,
             query_arousal=q_arousal,
+            date_from=date_from,
+            date_to=date_to,
             include_candidates=include_candidates,
             recall_mode=recall_mode,
         )
@@ -1257,14 +1261,18 @@ async def breath_search(
     max_tokens: int = 10000,
     domain: str = "",
     recall_mode: str = "normal",
+    date_from: str = "",
+    date_to: str = "",
 ) -> str:
-    """breath_search 记忆检索 查证 search recall query memory。【要找过去某件事、某个名词、某段经历时调用；日常查证请用它，不要把 breath 当搜索用】按关键词/语义双通道检索，不混入钉选核心准则；结果逐条带 bucket_id 与日期。max_results 控制数量上限(默认20,最大50)，max_tokens 控制总token上限(默认10000)，domain 逗号分隔按主题域预筛，recall_mode 同 breath。"""
+    """breath_search 记忆检索 查证 search recall query memory。【要找过去某件事、某个名词、某段经历时调用；日常查证请用它，不要把 breath 当搜索用】按关键词/语义双通道检索，不混入钉选核心准则；结果逐条带 bucket_id 与日期。date_from/date_to 按记忆日期过滤（YYYY-MM-DD 或 ISO，±1 天软窗口）。max_results 控制数量上限(默认20,最大50)，max_tokens 控制总token上限(默认10000)，domain 逗号分隔按主题域预筛，recall_mode 同 breath。"""
     return await breath(
         query=query,
         max_results=max_results,
         max_tokens=max_tokens,
         domain=domain,
         recall_mode=recall_mode,
+        date_from=date_from,
+        date_to=date_to,
         response_format="text",
     )
 
