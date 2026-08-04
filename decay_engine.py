@@ -197,7 +197,7 @@ class DecayEngine:
 
             # Skip permanent / pinned / protected / feel buckets
             # 跳过固化桶、钉选/保护桶和 feel 桶
-            if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
+            if meta.get("type") in ("permanent", "feel", "plan") or meta.get("pinned") or meta.get("protected"):
                 continue
 
             checked += 1

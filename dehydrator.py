@@ -597,3 +597,53 @@ class Dehydrator:
                 "importance": importance,
             })
         return validated
+
+    # ---------------------------------------------------------
+    # Plan resolution judgement / 承诺闭环判定
+    # ---------------------------------------------------------
+    async def judge_plan_resolution(self, plan_content: str, event_content: str) -> dict | None:
+        """
+        Judge whether a new event closes an active plan (promise/todo).
+        判断新事件是否闭环了一条承诺/待办。API 不可用或判定失败返回 None，
+        调用方一律按"未闭环"处理，绝不因为判定失败误关承诺。
+        """
+        if not self.api_available or not self.client:
+            return None
+        plan_text = str(plan_content or "").strip()[:800]
+        event_text = str(event_content or "").strip()[:1500]
+        if not plan_text or not event_text:
+            return None
+        system = (
+            "你是记忆系统的承诺闭环判定员。判断「新发生的事件」是否表明一条「计划/承诺」已经完成。\n"
+            "规则：只有事件明确完成了计划的核心动作才判 resolved=true；"
+            "只是提到、讨论、约好、还没做完，一律 resolved=false。\n"
+            "只输出 JSON：{\"resolved\": true 或 false, \"reason\": \"一句话理由\"}"
+        )
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"计划：{plan_text}\n\n新事件：{event_text}"},
+                ],
+                max_tokens=120,
+                temperature=0.0,
+            )
+            raw = (response.choices[0].message.content or "").strip() if response.choices else ""
+            if not raw:
+                return None
+            cleaned = raw.replace("```json", "").replace("```", "").strip()
+            first = cleaned.find("{")
+            last = cleaned.rfind("}")
+            if first < 0 or last <= first:
+                return None
+            value = json.loads(cleaned[first:last + 1])
+            if not isinstance(value, dict):
+                return None
+            return {
+                "resolved": bool(value.get("resolved")),
+                "reason": str(value.get("reason", ""))[:200],
+            }
+        except Exception as exc:
+            logger.warning(f"judge_plan_resolution failed / 承诺闭环判定失败: {exc}")
+            return None

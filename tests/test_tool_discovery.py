@@ -33,6 +33,10 @@ EXPECTED_TOOL_ALIASES = {
     "archivist": ("AI记忆归档员", "batch", "archive"),
     "pulse": ("系统状态", "status", "memories"),
     "dream": ("做梦", "reflect", "memory"),
+    "plan": ("承诺", "todo", "promise"),
+    "plan_list": ("计划列表", "看板", "plans"),
+    "anchor": ("锚定", "坐标系", "coordinate"),
+    "release": ("解除锚定", "坐标系", "anchor"),
     "handoff": ("短期状态", "handoff", "short-term"),
 }
 

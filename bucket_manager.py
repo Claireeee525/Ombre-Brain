@@ -202,6 +202,8 @@ class BucketManager:
             "curated_by", "source_surface", "evidence_quotes", "memory_layer",
             "recall_policy", "expires_at", "source_bucket", "consolidated_from",
             "source_surfaces", "consolidation_job_id", "consolidation_topic",
+            "anchor", "status", "weight", "why_remembered", "related_bucket",
+            "change_log", "source_tool", "digested", "dont_surface",
         }
         for key, value in (extra_metadata or {}).items():
             if key not in allowed_extra or value is None:
@@ -230,6 +232,21 @@ class BucketManager:
                 ][:24]
             elif key == "confidence":
                 metadata[key] = max(0.0, min(1.0, float(value)))
+            elif key == "weight":
+                metadata[key] = max(0.0, min(1.0, float(value)))
+            elif key == "anchor":
+                metadata[key] = bool(value)
+            elif key == "change_log":
+                metadata[key] = [
+                    {
+                        "at": str(item.get("at") or "")[:80],
+                        "action": str(item.get("action") or "")[:80],
+                        "reason": str(item.get("reason") or "")[:240],
+                        "to": str(item.get("to") or "")[:80],
+                    }
+                    for item in (value or [])
+                    if isinstance(item, dict)
+                ][:40]
             elif isinstance(value, (str, int, float, bool)):
                 metadata[key] = value
 
@@ -360,6 +377,29 @@ class BucketManager:
                 post["importance"] = 10  # pinned → lock importance to 10
         if "digested" in kwargs:
             post["digested"] = bool(kwargs["digested"])
+        if "anchor" in kwargs:
+            post["anchor"] = bool(kwargs["anchor"])
+        if "status" in kwargs:
+            post["status"] = str(kwargs["status"])[:40]
+        if "weight" in kwargs:
+            post["weight"] = max(0.0, min(1.0, float(kwargs["weight"])))
+        if "why_remembered" in kwargs:
+            post["why_remembered"] = str(kwargs["why_remembered"])[:500]
+        if "related_bucket" in kwargs:
+            post["related_bucket"] = str(kwargs["related_bucket"])[:120]
+        if "source_tool" in kwargs:
+            post["source_tool"] = str(kwargs["source_tool"])[:40]
+        if "change_log" in kwargs:
+            post["change_log"] = [
+                {
+                    "at": str(item.get("at") or "")[:80],
+                    "action": str(item.get("action") or "")[:80],
+                    "reason": str(item.get("reason") or "")[:240],
+                    "to": str(item.get("to") or "")[:80],
+                }
+                for item in (kwargs["change_log"] or [])
+                if isinstance(item, dict)
+            ][:40]
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
         for key in (

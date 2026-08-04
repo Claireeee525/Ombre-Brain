@@ -44,6 +44,7 @@ import secrets
 import time
 import json as _json_lib
 import httpx
+from datetime import datetime
 from pathlib import Path
 
 
@@ -74,7 +75,7 @@ from memory_layers import (
     memory_recallable,
     normalize_layer_metadata,
 )
-from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
+from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, now_iso
 from oauth_provider import OmbreOAuthProvider, install_oauth_login_routes
 from recall_cooldown import RecallCooldown
 import somatic_state
@@ -998,9 +999,10 @@ async def breath(
             and not b["metadata"].get("digested", False)
             and not b["metadata"].get("dont_surface", False)
             and b["id"] not in cooling_ids
-            and b["metadata"].get("type") not in ("permanent", "feel")
+            and b["metadata"].get("type") not in ("permanent", "feel", "plan")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
+            and not b["metadata"].get("anchor", False)
             and _curator_recallable(
                 b["metadata"], include_candidates,
                 content=b.get("content", ""), recall_mode=recall_mode,
@@ -1147,7 +1149,8 @@ async def breath(
     # --- 上游 v2.10+：digested 只从默认/被动浮现隐藏，显式检索仍可按 query 找回 ---
     matches = [
         b for b in matches
-        if _curator_recallable(
+        if b["metadata"].get("type") != "plan"
+        and _curator_recallable(
             b["metadata"], include_candidates,
             content=b.get("content", ""), recall_mode=recall_mode,
         )
@@ -1425,6 +1428,7 @@ async def hold(
             await embedding_engine.generate_and_store(bucket_id, content)
         except Exception:
             pass
+        _fire_plan_resolution(content)
         return f"📌钉选→{bucket_id} {','.join(domain)}"
 
     # --- Step 2: merge or create / 合并或新建 ---
@@ -1440,7 +1444,222 @@ async def hold(
     )
 
     action = "合并→" if is_merged else "新建→"
+    _fire_plan_resolution(content)
     return f"{action}{result_name} {','.join(domain)}"
+
+
+# =============================================================
+# Tool 2c: plan — promises and todos
+# 工具 2c：plan — 承诺与待办
+# =============================================================
+_PLAN_STATUSES = {"active", "resolved", "abandoned"}
+_DREAM_MAX_CANDIDATES = 40
+
+
+def _plan_change_log(entry: dict) -> list[dict]:
+    return [dict(entry)]
+
+
+async def _plan_bucket_text(plan: dict) -> str:
+    meta = plan.get("metadata", {})
+    status = str(meta.get("status") or "active")
+    mark = "✅" if status == "resolved" else ("⏸" if status == "abandoned" else "📋")
+    weight = float(meta.get("weight") or 0.5)
+    created = str(meta.get("created") or "")[:10]
+    return (
+        f"{mark}[计划:{status}] [bucket_id:{plan.get('id')}] "
+        f"[weight:{weight:.1f}] [创建:{created}] "
+        f"{strip_wikilinks(str(plan.get('content') or ''))}"
+    )
+
+
+@mcp.tool()
+async def plan(
+    content: str,
+    status: str = "active",
+    related_bucket: str = "",
+    weight: float = 0.5,
+    why_remembered: str = "",
+) -> str:
+    """plan 承诺 待办 登记 promise todo plan。【答应或想完成的事用这个，不要用 hold 当待办】登记一条承诺/待办：不衰减、不出现在普通 breath，只在 dream 末尾出现；后续 hold/grow 写新事件时会自动判断是否闭环。status 可填 active/resolved/abandoned，weight 0~1。"""
+    await decay_engine.ensure_started()
+    if not content or not content.strip():
+        return "内容为空，无法登记计划。"
+    try:
+        parsed_weight = max(0.0, min(1.0, float(weight)))
+    except (TypeError, ValueError):
+        parsed_weight = 0.5
+    status = str(status or "active").strip().lower()
+    if status not in _PLAN_STATUSES:
+        status = "active"
+    why = str(why_remembered or "").strip()[:500]
+    related = str(related_bucket or "").strip()[:120]
+    norm = str(content).strip()
+
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        for b in all_buckets:
+            m = b.get("metadata", {})
+            if (
+                m.get("type") == "plan"
+                and m.get("status", "active") == "active"
+                and str(b.get("content") or "").strip() == norm
+            ):
+                return f"跟原有 active plan 完全重复→{b['id']}（未重复登记）"
+    except Exception as e:
+        logger.warning(f"plan dedup scan failed / 计划去重扫描失败: {e}")
+
+    bucket_id = await bucket_mgr.create(
+        content=norm,
+        tags=["__plan__"],
+        importance=7,
+        domain=["plan"],
+        valence=0.5,
+        arousal=0.4,
+        name=None,
+        bucket_type="plan",
+        extra_metadata={
+            "status": status,
+            "weight": round(parsed_weight, 3),
+            "why_remembered": why,
+            "related_bucket": related,
+            "change_log": _plan_change_log({"at": now_iso(), "action": "created", "to": status}),
+            "source_tool": "plan",
+            "memory_status": "confirmed",
+            "recall_policy": "normal",
+        },
+    )
+    try:
+        await embedding_engine.generate_and_store(bucket_id, norm)
+    except Exception:
+        pass
+    return f"📋plan→{bucket_id} [{status}]"
+
+
+@mcp.tool()
+async def plan_list(status: str = "active", limit: int = 20) -> str:
+    """plan_list 计划列表 承诺看板 list plans todos。【只读】列出承诺/待办，默认只看 active；status 可填 active/resolved/abandoned/all。"""
+    status_filter = str(status or "active").strip().lower()
+    if status_filter not in ("active", "resolved", "abandoned", "all"):
+        status_filter = "active"
+    limit = max(1, min(int(limit or 20), 100))
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        return f"读取计划失败: {e}"
+    plans = [
+        b for b in all_buckets
+        if b["metadata"].get("type") == "plan"
+        and (status_filter == "all" or str(b["metadata"].get("status") or "active") == status_filter)
+    ]
+    plans.sort(key=lambda b: (str(b["metadata"].get("status") or "") != "active", str(b["metadata"].get("created") or "")), reverse=True)
+    if not plans:
+        return "没有需要跟进的计划。"
+    rows = [await _plan_bucket_text(b) for b in plans[:limit]]
+    return f"=== 计划看板（{status_filter} · 前 {len(rows)} 条）===\n" + "\n---\n".join(rows)
+
+
+async def _check_plan_resolution(event_text: str) -> None:
+    """新事件写入后，用关键词预筛 + LLM 保守判断 active plan 是否闭环。"""
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        logger.warning(f"plan resolution list failed: {e}")
+        return
+    active = [
+        b for b in all_buckets
+        if b["metadata"].get("type") == "plan"
+        and b["metadata"].get("status", "active") == "active"
+    ]
+    if not active:
+        return
+    event_norm = "".join(str(event_text or "").split())
+    if not event_norm:
+        return
+
+    def _overlap(plan: dict) -> float:
+        key = "".join(str(plan.get("content") or "").split())
+        if not key:
+            return 0.0
+        chars = set(key)
+        return sum(1 for ch in chars if ch in event_norm) / max(1, len(chars))
+
+    ranked = sorted(active, key=_overlap, reverse=True)[:5]
+    for b in ranked:
+        try:
+            judgement = await dehydrator.judge_plan_resolution(
+                strip_wikilinks(str(b.get("content") or "")),
+                strip_wikilinks(str(event_text or "")),
+            )
+        except Exception as e:
+            logger.warning(f"plan resolution judgement failed / 闭环判定失败: {e}")
+            continue
+        if not judgement or not judgement.get("resolved"):
+            continue
+        try:
+            plan_meta = b.get("metadata", {})
+            change_log = list(plan_meta.get("change_log") or [])
+            change_log.append({"at": now_iso(), "action": "auto_resolved", "reason": judgement.get("reason", "")})
+            await bucket_mgr.update(
+                b["id"],
+                status="resolved",
+                resolved=True,
+                change_log=change_log,
+            )
+            logger.info(f"plan auto-resolved: {b['id']} — {judgement.get('reason', '')[:120]}")
+        except Exception as e:
+            logger.warning(f"plan auto-resolve write failed / 自动闭环写入失败: {e}")
+
+
+def _fire_plan_resolution(event_text: str) -> None:
+    try:
+        asyncio.ensure_future(_check_plan_resolution(event_text))
+    except Exception:
+        pass
+
+
+_ANCHOR_LIMIT = 24
+
+
+async def _anchor_state() -> tuple[int, list[str]]:
+    all_buckets = await bucket_mgr.list_all(include_archive=False)
+    ids = [b["id"] for b in all_buckets if b["metadata"].get("anchor")]
+    return len(ids), ids
+
+
+@mcp.tool()
+async def anchor(bucket_id: str) -> str:
+    """anchor 锚定 坐标系 基准点 anchor coordinate。【把一条已存在的记忆设为关系/身份的坐标系：不主动浮现，检索仍可命中，上限24条】必须先 hold 再 anchor。"""
+    bucket_id = str(bucket_id or "").strip()
+    if not bucket_id:
+        return "请提供有效的 bucket_id。"
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return f"找不到这条记忆: {bucket_id}"
+    count, _ = await _anchor_state()
+    if bucket["metadata"].get("anchor"):
+        return f"它已经是 anchor 了。当前 {count}/{_ANCHOR_LIMIT}。"
+    if count >= _ANCHOR_LIMIT:
+        return f"anchor 已满（{count}/{_ANCHOR_LIMIT}）。先 release 一条旧的，再锚新的。"
+    await bucket_mgr.update(bucket_id, anchor=True)
+    return f"已锚定。它现在是坐标系的一部分，不会被默认浮现挤进上下文。当前 {count + 1}/{_ANCHOR_LIMIT}。"
+
+
+@mcp.tool()
+async def release(bucket_id: str) -> str:
+    """release 解除锚定 坐标系 unanchor coordinate。【把一条 anchor 恢复成普通记忆，重新参与默认浮现】"""
+    bucket_id = str(bucket_id or "").strip()
+    if not bucket_id:
+        return "请提供有效的 bucket_id。"
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return f"找不到这条记忆: {bucket_id}"
+    count, _ = await _anchor_state()
+    if not bucket["metadata"].get("anchor"):
+        return f"它本来就不是 anchor。当前 {count}/{_ANCHOR_LIMIT}。"
+    await bucket_mgr.update(bucket_id, anchor=False)
+    count, _ = await _anchor_state()
+    return f"已解除锚定，它会重新参与默认浮现。当前 {count}/{_ANCHOR_LIMIT}。"
 
 
 # =============================================================
@@ -2221,6 +2440,7 @@ async def grow(
             ),
             allow_merge=False,
         )
+        _fire_plan_resolution(content.strip())
         return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
 
     # --- Step 1: let API split and organize / 让 API 拆分整理 ---
@@ -2272,6 +2492,7 @@ async def grow(
             )
             results.append(f"⚠️{item.get('name', '?')}")
 
+    _fire_plan_resolution(content.strip())
     return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
 
 
@@ -2293,10 +2514,11 @@ async def trace(
     resolved: int = -1,
     pinned: int = -1,
     digested: int = -1,
+    status: str = "",
     content: str = "",
     delete: bool = False,
 ) -> str:
-    """trace 修改 删除 记忆 edit update delete memory。修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
+    """trace 修改 删除 记忆 edit update delete memory。修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,status=plan桶状态(active/resolved/abandoned),content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
 
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
@@ -2341,6 +2563,17 @@ async def trace(
             updates["importance"] = 10  # pinned → lock importance
     if digested in (0, 1):
         updates["digested"] = bool(digested)
+    plan_status = str(status or "").strip().lower()
+    if plan_status:
+        if bucket["metadata"].get("type") != "plan":
+            return "status 只能用于 plan 桶"
+        if plan_status not in _PLAN_STATUSES:
+            return f"status 只能是 {', '.join(sorted(_PLAN_STATUSES))}"
+        updates["status"] = plan_status
+        updates["resolved"] = plan_status == "resolved"
+        change_log = list(bucket["metadata"].get("change_log") or [])
+        change_log.append({"at": now_iso(), "action": "trace_status", "to": plan_status})
+        updates["change_log"] = change_log
     if content:
         updates["content"] = content
 
@@ -3503,6 +3736,9 @@ async def pulse(include_archive: bool = False) -> str:
         buckets = await bucket_mgr.list_all(include_archive=include_archive)
     except Exception as e:
         return status + f"\n列出记忆桶失败: {e}"
+    plan_count = sum(1 for b in buckets if b["metadata"].get("type") == "plan")
+    anchor_ids = [b["id"] for b in buckets if b["metadata"].get("anchor")]
+    status += f"plan 桶: {plan_count} 条\nanchor 坐标系: {len(anchor_ids)}/{_ANCHOR_LIMIT}\n"
 
     if not buckets:
         return status + "\n记忆库为空。"
@@ -3553,9 +3789,14 @@ async def pulse(include_archive: bool = False) -> str:
 # Claude then decides: resolve some, write feels, or do nothing.
 # =============================================================
 @mcp.tool()
-async def dream() -> str:
-    """dream 做梦 自省 近期记忆 dream reflect memory。读取最近新增的记忆桶,供你自省。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
+async def dream(window_hours: int = 48) -> str:
+    """dream 做梦 自省 近期记忆 dream reflect memory。【告一段落时调用】读取最近 window_hours 小时内变动的记忆（默认48，1~336），末尾附 active plan 看板；读完后可以 trace(resolved=1) 放下，或 hold(feel=True) 写感受。"""
     await decay_engine.ensure_started()
+    try:
+        window = max(1, min(int(window_hours or 48), 336))
+    except (TypeError, ValueError):
+        window = 48
+    cutoff = time.time() - window * 3600
 
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
@@ -3563,21 +3804,38 @@ async def dream() -> str:
         logger.error(f"Dream failed to list buckets: {e}")
         return "记忆系统暂时无法访问。"
 
-    # --- Filter: recent surface-level dynamic buckets (not permanent/pinned/feel) ---
+    def _in_window(meta: dict) -> bool:
+        for key in ("last_active", "created"):
+            raw = str(meta.get(key) or "")
+            if not raw:
+                continue
+            try:
+                ts = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if ts >= cutoff:
+                return True
+        return False
+
+    # --- Filter: windowed surface-level dynamic buckets, excluding hidden/anchor/plan ---
     candidates = [
         b for b in all_buckets
-        if b["metadata"].get("type") not in ("permanent", "feel")
+        if b["metadata"].get("type") not in ("permanent", "feel", "plan")
         and not b["metadata"].get("pinned", False)
         and not b["metadata"].get("protected", False)
+        and not b["metadata"].get("digested", False)
+        and not b["metadata"].get("dont_surface", False)
+        and not b["metadata"].get("anchor", False)
         and _curator_recallable(b["metadata"], False)
+        and _in_window(b["metadata"])
     ]
 
-    # --- Sort by creation time desc, take top 10 ---
-    candidates.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
-    recent = candidates[:10]
-
-    if not recent:
-        return "没有需要消化的新记忆。"
+    # --- Sort by last_active desc; soft cap 40 by decay score ---
+    candidates.sort(key=lambda b: str(b["metadata"].get("last_active") or b["metadata"].get("created") or ""), reverse=True)
+    if len(candidates) > _DREAM_MAX_CANDIDATES:
+        candidates.sort(key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
+        candidates = candidates[:_DREAM_MAX_CANDIDATES]
+    recent = candidates
 
     parts = []
     for b in recent:
@@ -3592,7 +3850,7 @@ async def dream() -> str:
             f"主题:{domains} V{val:.1f}/A{aro:.1f} "
             f"创建:{created}\n"
             f"ID: {b['id']}\n"
-            f"{strip_wikilinks(b['content'][:500])}"
+            f"{strip_wikilinks(b.get('content', ''))[:1200]}"
         )
 
     header = (
@@ -3669,7 +3927,21 @@ async def dream() -> str:
         except Exception as e:
             logger.warning(f"Dream crystallization hint failed: {e}")
 
-    final_text = header + "\n---\n".join(parts) + connection_hint + crystal_hint
+    active_plans = [
+        b for b in all_buckets
+        if b["metadata"].get("type") == "plan"
+        and b["metadata"].get("status", "active") == "active"
+    ]
+    active_plans.sort(key=lambda b: float(b["metadata"].get("weight") or 0.5), reverse=True)
+    plans_section = ""
+    if active_plans:
+        plan_rows = [await _plan_bucket_text(b) for b in active_plans[:20]]
+        plans_section = "\n\n=== Active Plans ===\n" + "\n---\n".join(plan_rows)
+
+    if not parts:
+        final_text = "=== Dreaming ===\n最近没有需要消化的新记忆。" + plans_section
+    else:
+        final_text = header + "\n---\n".join(parts) + connection_hint + crystal_hint + plans_section
     await _fire_webhook("dream", {"recent": len(recent), "chars": len(final_text)})
     return final_text
 
