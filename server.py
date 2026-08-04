@@ -2189,11 +2189,14 @@ async def grow(
     if not content or not content.strip():
         return "内容为空，无法整理。"
 
-    # evidence 层已撤：官端 grow 拿到的 content 其实是我拼的一段回顾，
-    # 不是真原话；此前把它存成 "原文证据 xxx" 桶等于用假原文骗自己，
-    # 反而在 Herbier 里堆重复卡片。真原文只有小家侧的记忆秘书能拿。
-    # 回到"只拆桶不存原文"的老逻辑。
-    evidence_id, evidence_created = "", False
+    # 先落一份不可变的原文证据桶（exact_only，不参与正常召回），
+    # 再让 digest 拆出的候选桶通过 source_evidence_id 指向它。
+    # 真原话只在 source_read 凭精确 ID + 范围读取，不会被故事吞掉。
+    evidence_id, evidence_created = await _store_source_evidence(
+        content,
+        source_surface=source_surface,
+        source_session_id=source_session_id,
+    )
 
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
@@ -2227,7 +2230,7 @@ async def grow(
             ),
             allow_merge=False,
         )
-        return f"待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
+        return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
 
     # --- Step 1: let API split and organize / 让 API 拆分整理 ---
     try:
@@ -2278,7 +2281,7 @@ async def grow(
             )
             results.append(f"⚠️{item.get('name', '?')}")
 
-    return f"待审候选→{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
+    return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
 
 
 # =============================================================
