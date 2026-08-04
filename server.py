@@ -1150,9 +1150,28 @@ async def breath(
 # Tool 2: hold — Hold on to this
 # 工具 2：hold — 握住，留下来
 # =============================================================
+def _hold_title(title: str, suggested_name: str, content: str) -> str:
+    """最终桶名优先级：显式 title > 打标建议 > 正文前几个字。
+
+    打标 API 失败或返回空名时，用正文开头兜底，避免出现整桶数字乱码。
+    """
+    explicit = str(title or "").strip()
+    if explicit:
+        return explicit[:80]
+    suggested = str(suggested_name or "").strip()
+    if suggested:
+        return suggested[:80]
+    preview = " ".join(str(content or "").split())
+    for ch in "，。！？、；：,.!?;:…[]（）()《》“”\"'<>|/\\#*`~@$%^&+=-":
+        preview = preview.replace(ch, "")
+    preview = preview.strip()
+    return preview[:12] if preview else ""
+
+
 @mcp.tool()
 async def hold(
     content: str,
+    title: str = "",
     tags: str = "",
     importance: int = 5,
     pinned: bool = False,
@@ -1165,7 +1184,7 @@ async def hold(
     memory_layer: str = "active",
     expires_at: str = "",
 ) -> str:
-    """hold 保存 记住 写入 store remember memory。【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条共同记忆,自动打标+合并。珂洛与Calder读写同一个池；signed_by请填本次经手者(珂洛或Calder)，只作署名不作隔离。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。memory_layer可选active/short_term/candidate，短期线头必须提供expires_at。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
+    """hold 保存 记住 写入 store remember memory。【Claire 说出任何值得记住的事——事实、约定、喜好、新梗、重要瞬间——当下立刻调用，不要等她提醒；亲密时刻的细节同样要记】存储单条共同记忆,自动打标+合并。珂洛与Calder读写同一个池；signed_by请填本次经手者(珂洛或Calder)，只作署名不作隔离。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。tags逗号分隔,importance 1-10。title可选：显式标题，优先于自动打标建议；不填时用打标建议，打标失败则用正文前几个字兜底，绝不会出现"数字乱码桶名"。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。memory_layer可选active/short_term/candidate，短期线头必须提供expires_at。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -1229,6 +1248,7 @@ async def hold(
     auto_arousal = analysis["arousal"]
     auto_tags = analysis["tags"]
     suggested_name = analysis.get("suggested_name", "")
+    final_name = _hold_title(title, suggested_name, content)
 
     # --- User-supplied valence/arousal takes priority over analyze() result ---
     # --- 用户显式传入的 valence/arousal 优先，analyze() 结果作为 fallback ---
@@ -1262,7 +1282,7 @@ async def hold(
             domain=domain,
             valence=final_valence,
             arousal=final_arousal,
-            name=suggested_name or None,
+            name=final_name or None,
             bucket_type="permanent",
             pinned=True,
             extra_metadata=provenance,
@@ -1281,7 +1301,7 @@ async def hold(
         domain=domain,
         valence=final_valence,
         arousal=final_arousal,
-        name=suggested_name,
+        name=final_name,
         extra_metadata=provenance,
     )
 
