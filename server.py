@@ -956,7 +956,7 @@ async def breath(
         round_no = cooldown.next_round() if cooldown else 0
         cooling_ids = cooldown.cooling_ids(round_no) if cooldown else set()
         surfacing_cfg = config.get("surfacing", {}) or {}
-        max_dynamic = max(1, int(surfacing_cfg.get("max_dynamic_per_call", 2)))
+        max_dynamic = max(1, int(surfacing_cfg.get("max_dynamic_per_call") or os.environ.get("OMBRE_SURFACING_MAX_DYNAMIC", 5)))
         max_pinned_surface = max(1, int(surfacing_cfg.get("max_pinned_per_call", _DEFAULT_MAX_PINNED_SURFACE)))
 
         # --- Pinned/protected buckets: always surface as core principles ---
