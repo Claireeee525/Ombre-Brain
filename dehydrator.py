@@ -536,6 +536,10 @@ class Dehydrator:
         Call LLM API for diary organization.
         调用 LLM API 执行日记整理。
         """
+        logger.info(
+            f"Diary digest calling API / 日记整理调用 API: "
+            f"model={self.model}, content_len={len(content[:5000])}"
+        )
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -545,11 +549,42 @@ class Dehydrator:
             max_tokens=2048,
             temperature=0.0,
         )
+        # --- Full response diagnostics / 完整响应诊断日志 ---
+        finish = ""
+        usage_info = ""
+        if response.choices:
+            finish = getattr(response.choices[0], "finish_reason", "?")
+        if hasattr(response, "usage") and response.usage:
+            usage_info = (
+                f"prompt={getattr(response.usage, 'prompt_tokens', '?')} "
+                f"completion={getattr(response.usage, 'completion_tokens', '?')} "
+                f"total={getattr(response.usage, 'total_tokens', '?')}"
+            )
+        logger.info(
+            f"Diary digest API response / API 返回: "
+            f"choices={len(response.choices or [])}, "
+            f"finish_reason={finish}, "
+            f"model={getattr(response, 'model', '?')}, "
+            f"{usage_info}"
+        )
         if not response.choices:
+            logger.error(
+                f"Diary digest API returned empty choices / API 返回空 choices: "
+                f"model={self.model}, response_id={getattr(response, 'id', '?')}"
+            )
             return []
         raw = response.choices[0].message.content or ""
         if not raw.strip():
+            logger.error(
+                f"Diary digest API returned empty content / API 返回空内容: "
+                f"finish_reason={finish}, "
+                f"content_type={type(response.choices[0].message.content).__name__}, "
+                f"content_repr={repr(response.choices[0].message.content)[:200]}"
+            )
             return []
+        logger.info(
+            f"Diary digest raw response preview / 原始返回预览: {raw[:200]}"
+        )
         return self._parse_digest(raw)
 
     # ---------------------------------------------------------
@@ -566,8 +601,13 @@ class Dehydrator:
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
             items = json.loads(cleaned)
-        except (json.JSONDecodeError, IndexError, ValueError):
-            logger.warning(f"Diary digest JSON parse failed / JSON 解析失败: {raw[:200]}")
+        except (json.JSONDecodeError, IndexError, ValueError) as e:
+            logger.warning(
+                f"Diary digest JSON parse failed / JSON 解析失败: "
+                f"error={e}, "
+                f"raw_len={len(raw)}, "
+                f"raw_full={raw}"
+            )
             return []
 
         if not isinstance(items, list):
