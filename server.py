@@ -2520,7 +2520,11 @@ async def grow(
     source_session_id: str = "",
 ) -> str:
     """grow 日记归档 拆分 diary archive memory。【自动整理入口】先保存完整原文证据，再把摘要放进待审候选；不会自动并入有效记忆。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。"""
-    await decay_engine.ensure_started()
+    try:
+        await decay_engine.ensure_started()
+    except Exception as e:
+        logger.error(f"grow: decay_engine.ensure_started() failed / 衰减引擎启动失败: {e}")
+        return f"内部错误：衰减引擎启动失败 - {e}"
 
     if not content or not content.strip():
         return "内容为空，无法整理。"
@@ -2528,11 +2532,15 @@ async def grow(
     # 先落一份不可变的原文证据桶（exact_only，不参与正常召回），
     # 再让 digest 拆出的候选桶通过 source_evidence_id 指向它。
     # 真原话只在 source_read 凭精确 ID + 范围读取，不会被故事吞掉。
-    evidence_id, evidence_created = await _store_source_evidence(
-        content,
-        source_surface=source_surface,
-        source_session_id=source_session_id,
-    )
+    try:
+        evidence_id, evidence_created = await _store_source_evidence(
+            content,
+            source_surface=source_surface,
+            source_session_id=source_session_id,
+        )
+    except Exception as e:
+        logger.error(f"grow: _store_source_evidence failed / 原文证据保存失败: {e}")
+        return f"内部错误：原文证据保存失败 - {e}"
 
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
@@ -2549,23 +2557,27 @@ async def grow(
                 "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
                 "tags": [], "suggested_name": "",
             }
-        result_name, is_merged = await _merge_or_create(
-            content=content.strip(),
-            tags=analysis.get("tags", []),
-            importance=analysis.get("importance", 5) if isinstance(analysis.get("importance"), int) else 5,
-            domain=analysis.get("domain", ["未分类"]),
-            valence=analysis.get("valence", 0.5),
-            arousal=analysis.get("arousal", 0.3),
-            name=analysis.get("suggested_name", ""),
-            extra_metadata=_auto_candidate_metadata(
-                evidence_id=evidence_id,
+        try:
+            result_name, is_merged = await _merge_or_create(
                 content=content.strip(),
-                source_surface=source_surface,
-                source_session_id=source_session_id,
-                title=analysis.get("suggested_name", ""),
-            ),
-            allow_merge=False,
-        )
+                tags=analysis.get("tags", []),
+                importance=analysis.get("importance", 5) if isinstance(analysis.get("importance"), int) else 5,
+                domain=analysis.get("domain", ["未分类"]),
+                valence=analysis.get("valence", 0.5),
+                arousal=analysis.get("arousal", 0.3),
+                name=analysis.get("suggested_name", ""),
+                extra_metadata=_auto_candidate_metadata(
+                    evidence_id=evidence_id,
+                    content=content.strip(),
+                    source_surface=source_surface,
+                    source_session_id=source_session_id,
+                    title=analysis.get("suggested_name", ""),
+                ),
+                allow_merge=False,
+            )
+        except Exception as e:
+            logger.error(f"Fast-path merge_or_create failed / 快速路径创建失败: {e}")
+            return f"内部错误：快速路径记忆创建失败 - {e}"
         _fire_plan_resolution(content.strip())
         return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
 
