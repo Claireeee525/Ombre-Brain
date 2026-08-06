@@ -211,6 +211,81 @@ def test_parse_error_never_exposes_diary_content(tmp_path, caplog):
 
 
 # ═══════════════════════════════════════════════════════════════
+# _api_digest request parameter tests
+# ═══════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_api_digest_sends_thinking_disabled(tmp_path, monkeypatch):
+    """_api_digest must include thinking disabled + json_object + max_tokens=4096."""
+    dh = _dehydrator_for(tmp_path, monkeypatch)
+    items = [{"name": "t", "content": "c", "domain": ["日常"], "valence": 0.5, "arousal": 0.3, "tags": [], "importance": 5}]
+    choice = MagicMock()
+    choice.finish_reason = "stop"
+    choice.message.content = json.dumps({"items": items}, ensure_ascii=False)
+    dh.client.chat.completions.create.return_value = _fake_response(choices=[choice])
+
+    await dh._api_digest("test content here for digest")
+    call_kwargs = dh.client.chat.completions.create.call_args[1]
+
+    assert call_kwargs["max_tokens"] == 4096
+    assert call_kwargs["response_format"] == {"type": "json_object"}
+    assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.asyncio
+async def test_api_digest_items_wrapper_parses(tmp_path, monkeypatch):
+    """_api_digest correctly parses {\"items\": [...]} format from prompt."""
+    dh = _dehydrator_for(tmp_path, monkeypatch)
+    items = _valid_items()
+    choice = MagicMock()
+    choice.finish_reason = "stop"
+    choice.message.content = json.dumps({"items": items}, ensure_ascii=False)
+    dh.client.chat.completions.create.return_value = _fake_response(choices=[choice])
+
+    result = await dh._api_digest("test content")
+    assert len(result) == 2
+    assert result[0]["name"] == "早上的咖啡"
+    assert result[1]["name"] == "下午的散步"
+
+
+@pytest.mark.asyncio
+async def test_api_digest_still_parses_old_array_format(tmp_path, monkeypatch):
+    """_api_digest still parses top-level array for backward compatibility."""
+    dh = _dehydrator_for(tmp_path, monkeypatch)
+    items = _valid_items()
+    choice = MagicMock()
+    choice.finish_reason = "stop"
+    choice.message.content = json.dumps(items, ensure_ascii=False)  # old array
+    dh.client.chat.completions.create.return_value = _fake_response(choices=[choice])
+
+    result = await dh._api_digest("test content")
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_never_leaked(tmp_path, monkeypatch, caplog):
+    """reasoning_content must never appear in result, error, or log."""
+    dh = _dehydrator_for(tmp_path, monkeypatch)
+    choice = MagicMock()
+    choice.finish_reason = "stop"
+    choice.message.content = json.dumps({"items": _valid_items()}, ensure_ascii=False)
+    # Simulate DeepSeek reasoning_content with sensitive text
+    choice.message.reasoning_content = "Claire-SECRET-THOUGHT-12345-内心推理过程"
+    resp = _fake_response(choices=[choice])
+    dh.client.chat.completions.create.return_value = resp
+
+    with caplog.at_level(logging.INFO):
+        result = await dh._api_digest("test content")
+
+    # Result must not contain reasoning
+    result_str = json.dumps(result, ensure_ascii=False)
+    assert "Claire-SECRET-THOUGHT" not in result_str
+    assert "reasoning" not in result_str.lower()
+    # Log must not contain reasoning
+    assert "Claire-SECRET-THOUGHT" not in caplog.text
+
+
+# ═══════════════════════════════════════════════════════════════
 # Grow failure path tests — call real _grow_impl via fixture
 # ═══════════════════════════════════════════════════════════════
 
