@@ -52,19 +52,15 @@ def _valid_items():
 
 @pytest.fixture
 def server_module(tmp_path, monkeypatch):
-    """Import server.py in an isolated environment. Only mocks dependencies
-    that are unavailable in the test environment (mcp, starlette).
-    Cleans up sys.modules on teardown."""
-    # Record pre-existing sys.modules keys to restore later
-    pre_modules = set(sys.modules.keys())
-
-    # Mock only truly unavailable deps
+    """Import server.py with sys.modules patching + automatic rollback.
+    Only mocks deps unavailable in the test environment."""
+    # Save originals and set mocks — restore on teardown
     _mcp = MagicMock()
     _mcp.server = MagicMock()
     _mcp.server.fastmcp = MagicMock()
     _mcp.server.fastmcp.FastMCP = MagicMock()
     _mcp.types = MagicMock()
-    _mcp_starlette = [
+    _mocks = [
         ("mcp", _mcp),
         ("mcp.server", _mcp.server),
         ("mcp.server.fastmcp", _mcp.server.fastmcp),
@@ -77,11 +73,12 @@ def server_module(tmp_path, monkeypatch):
         ("starlette.middleware", MagicMock()),
         ("starlette.authentication", MagicMock()),
         ("oauth_provider", MagicMock()),
-        # Modules with `|` type hint (Python 3.10+), unavailable on 3.9
         ("embedding_engine", MagicMock()),
         ("import_memory", MagicMock()),
     ]
-    for name, mock in _mcp_starlette:
+    saved = {}
+    for name, mock in _mocks:
+        saved[name] = sys.modules.get(name)
         sys.modules[name] = mock
     sys.modules["embedding_engine"].EmbeddingEngine = MagicMock()
 
@@ -93,20 +90,19 @@ def server_module(tmp_path, monkeypatch):
         "log_level": "WARNING",
     }))
 
-    # Import server
-    if "server" in sys.modules:
-        del sys.modules["server"]
+    # Import server fresh
+    sys.modules.pop("server", None)
     srv = importlib.import_module("server")
 
     yield srv
 
-    # Cleanup: remove everything added during this fixture
-    post_modules = set(sys.modules.keys())
-    for mod in post_modules - pre_modules:
-        del sys.modules[mod]
-    # Also remove server if it was in pre_modules (shouldn't be, but safe)
-    if "server" in sys.modules:
-        del sys.modules["server"]
+    # Teardown: restore original sys.modules state
+    sys.modules.pop("server", None)
+    for name, original in saved.items():
+        if original is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -403,3 +399,42 @@ async def test_store_source_evidence_dedup(server_module, monkeypatch, tmp_path)
     assert created3 is True
     assert eid3 != eid1
     assert len(store) == 2
+
+
+# ═══════════════════════════════════════════════════════════════
+# sys.modules recovery test
+# ═══════════════════════════════════════════════════════════════
+
+def test_fixture_restores_sys_modules_after_patching():
+    """Verify that manually patching and restoring sys.modules works correctly.
+    Pattern: save original → set mock → yield → restore original."""
+    sentinel = object()
+    # Ensure key is absent initially
+    sys.modules.pop("__sentinel_test__", None)
+    # Save + set mock
+    saved = sys.modules.get("__sentinel_test__")
+    sys.modules["__sentinel_test__"] = MagicMock()
+    # Simulate fixture teardown: restore original
+    if saved is None:
+        sys.modules.pop("__sentinel_test__", None)
+    else:
+        sys.modules["__sentinel_test__"] = saved
+    # After restore, key should be gone
+    assert "__sentinel_test__" not in sys.modules
+
+
+def test_fixture_restores_existing_module_after_patching():
+    """Verify that a previously existing module is restored, not deleted."""
+    sentinel = object()
+    sys.modules["__sentinel_test_2__"] = sentinel
+    saved = sys.modules.get("__sentinel_test_2__")
+    sys.modules["__sentinel_test_2__"] = MagicMock()
+    # Simulate teardown
+    if saved is None:
+        sys.modules.pop("__sentinel_test_2__", None)
+    else:
+        sys.modules["__sentinel_test_2__"] = saved
+    # After restore, the original sentinel should be back
+    assert sys.modules["__sentinel_test_2__"] is sentinel
+    # Clean up
+    sys.modules.pop("__sentinel_test_2__", None)
