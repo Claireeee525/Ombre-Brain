@@ -22,6 +22,7 @@
 # 被谁依赖：server.py
 # ============================================================
 
+from __future__ import annotations
 
 import os
 import re
@@ -169,6 +170,12 @@ class Dehydrator:
         self.base_url = dehy_cfg.get("base_url", "https://api.deepseek.com/v1")
         self.max_tokens = dehy_cfg.get("max_tokens", 1024)
         self.temperature = dehy_cfg.get("temperature", 0.1)
+        # 日记整理可独立切换模型，不影响 dehydrate/analyze/merge
+        self.digest_model = (
+            os.environ.get("OMBRE_DIGEST_MODEL", "").strip()
+            or dehy_cfg.get("digest_model", "")
+            or self.model
+        )
 
         # --- API availability / 是否有可用的 API ---
         self.api_available = bool(self.api_key)
@@ -518,14 +525,11 @@ class Dehydrator:
         if not self.api_available:
             raise RuntimeError("脱水 API 不可用，请检查 config.yaml 中的 dehydration 配置")
         try:
-            result = await self._api_digest(content)
-            if result:
-                return result
-            raise RuntimeError("API 日记整理返回空结果")
+            return await self._api_digest(content)
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError(f"API 日记整理失败，请检查 API 连接: {e}") from e
+            raise RuntimeError(f"日记整理 API 调用失败，请检查 API 连接: {e}") from e
 
     # ---------------------------------------------------------
     # API call: diary digest
@@ -535,13 +539,16 @@ class Dehydrator:
         """
         Call LLM API for diary organization.
         调用 LLM API 执行日记整理。
+        Raises RuntimeError with safe diagnostic info on failure.
         """
+        model = self.digest_model
+        content_hash = hashlib.sha256(content.strip().encode("utf-8")).hexdigest()[:16]
         logger.info(
             f"Diary digest calling API / 日记整理调用 API: "
-            f"model={self.model}, content_len={len(content[:5000])}"
+            f"model={model}, content_len={len(content[:5000])}, content_hash={content_hash}"
         )
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model=model,
             messages=[
                 {"role": "system", "content": DIGEST_PROMPT},
                 {"role": "user", "content": content[:5000]},
@@ -549,7 +556,7 @@ class Dehydrator:
             max_tokens=2048,
             temperature=0.0,
         )
-        # --- Full response diagnostics / 完整响应诊断日志 ---
+        # --- Full response diagnostics ---
         finish = ""
         usage_info = ""
         if response.choices:
@@ -560,28 +567,32 @@ class Dehydrator:
                 f"completion={getattr(response.usage, 'completion_tokens', '?')} "
                 f"total={getattr(response.usage, 'total_tokens', '?')}"
             )
+        actual_model = getattr(response, "model", "?")
+        response_id = getattr(response, "id", "?")
         logger.info(
             f"Diary digest API response / API 返回: "
             f"choices={len(response.choices or [])}, "
             f"finish_reason={finish}, "
-            f"model={getattr(response, 'model', '?')}, "
+            f"model={actual_model}, "
             f"{usage_info}"
         )
         if not response.choices:
-            logger.error(
-                f"Diary digest API returned empty choices / API 返回空 choices: "
-                f"model={self.model}, response_id={getattr(response, 'id', '?')}"
+            msg = (
+                f"日记整理 API 未返回 choices"
+                f"（model={model}, response_id={response_id}）"
             )
-            return []
+            logger.error(f"Diary digest API returned empty choices / {msg}")
+            raise RuntimeError(msg)
         raw = response.choices[0].message.content or ""
         if not raw.strip():
-            logger.error(
-                f"Diary digest API returned empty content / API 返回空内容: "
+            msg = (
+                f"日记整理 API 返回空正文"
+                f"（model={model}, "
                 f"finish_reason={finish}, "
-                f"content_type={type(response.choices[0].message.content).__name__}, "
-                f"content_repr={repr(response.choices[0].message.content)[:200]}"
+                f"completion_tokens={getattr(response.usage, 'completion_tokens', '?') if hasattr(response, 'usage') and response.usage else '?'}）"
             )
-            return []
+            logger.error(f"Diary digest API returned empty content / {msg}")
+            raise RuntimeError(msg)
         logger.info(
             f"Diary digest raw response preview / 原始返回预览: {raw[:200]}"
         )
@@ -595,27 +606,62 @@ class Dehydrator:
         """
         Parse and validate API diary digest result.
         解析并校验 API 返回的日记整理结果。
+        Raises RuntimeError with safe diagnostic info on failure.
         """
+        raw_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+        # --- Step 1: extract JSON from possible wrappers ---
+        cleaned = raw.strip()
+        # Strip ```json / ``` fences
+        if cleaned.startswith("```"):
+            try:
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            except (IndexError, ValueError):
+                pass
+        # Try to extract first [ ... ] array
         try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
-            items = json.loads(cleaned)
-        except (json.JSONDecodeError, IndexError, ValueError) as e:
-            logger.warning(
-                f"Diary digest JSON parse failed / JSON 解析失败: "
-                f"error={e}, "
-                f"raw_len={len(raw)}, "
-                f"raw_full={raw}"
+            start = cleaned.index("[")
+            end = cleaned.rindex("]") + 1
+            cleaned = cleaned[start:end]
+        except ValueError:
+            pass
+
+        # --- Step 2: parse JSON ---
+        try:
+            parsed = json.loads(cleaned)
+        except (json.JSONDecodeError, ValueError) as e:
+            msg = (
+                f"日记整理结果 JSON 解析失败"
+                f"（raw_len={len(raw)}, "
+                f"raw_hash={raw_hash}, "
+                f"preview={raw[:200]}）"
             )
-            return []
+            logger.warning(f"Diary digest JSON parse failed / {msg}\nerror={e}")
+            raise RuntimeError(msg) from e
 
-        if not isinstance(items, list):
-            return []
+        # --- Step 3: normalize to list ---
+        if isinstance(parsed, dict) and "items" in parsed:
+            items = parsed["items"]
+            if not isinstance(items, list):
+                msg = f"日记整理返回的 items 不是数组（raw_hash={raw_hash}）"
+                logger.warning(msg)
+                raise RuntimeError(msg)
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            msg = f"日记整理返回了非预期的根类型 {type(parsed).__name__}（raw_hash={raw_hash}）"
+            logger.warning(msg)
+            raise RuntimeError(msg)
 
+        # --- Step 4: validate each item ---
+        rejections = []
         validated = []
-        for item in items:
-            if not isinstance(item, dict) or not item.get("content"):
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                rejections.append(f"[{idx}] not_object")
+                continue
+            if not item.get("content"):
+                rejections.append(f"[{idx}] missing_content")
                 continue
             try:
                 importance = max(1, min(10, int(item.get("importance", 5))))
@@ -636,6 +682,26 @@ class Dehydrator:
                 "tags": item.get("tags", [])[:15],
                 "importance": importance,
             })
+
+        # --- Step 5: log validation stats ---
+        if rejections:
+            logger.info(
+                f"Diary digest validation / 日记整理校验: "
+                f"raw_len={len(raw)}, raw_hash={raw_hash}, "
+                f"total_items={len(items)}, "
+                f"valid={len(validated)}, "
+                f"rejected={len(rejections)}, "
+                f"reasons={rejections[:10]}"
+            )
+
+        if not validated:
+            msg = (
+                f"日记整理返回 {len(items)} 项，但没有有效 content"
+                f"（raw_hash={raw_hash}, rejections={rejections[:5]}）"
+            )
+            logger.warning(msg)
+            raise RuntimeError(msg)
+
         return validated
 
     # ---------------------------------------------------------
