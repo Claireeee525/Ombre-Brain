@@ -593,9 +593,6 @@ class Dehydrator:
             )
             logger.error(f"Diary digest API returned empty content / {msg}")
             raise RuntimeError(msg)
-        logger.info(
-            f"Diary digest raw response preview / 原始返回预览: {raw[:200]}"
-        )
         return self._parse_digest(raw)
 
     # ---------------------------------------------------------
@@ -633,8 +630,7 @@ class Dehydrator:
             msg = (
                 f"日记整理结果 JSON 解析失败"
                 f"（raw_len={len(raw)}, "
-                f"raw_hash={raw_hash}, "
-                f"preview={raw[:200]}）"
+                f"raw_hash={raw_hash}）"
             )
             logger.warning(f"Diary digest JSON parse failed / {msg}\nerror={e}")
             raise RuntimeError(msg) from e
