@@ -2515,13 +2515,13 @@ def _auto_candidate_metadata(
     }
 
 
-@mcp.tool()
-async def grow(
+async def _grow_impl(
     content: str,
     source_surface: str = "",
     source_session_id: str = "",
 ) -> str:
-    """grow 日记归档 拆分 diary archive memory。【自动整理入口】先保存完整原文证据，再把摘要放进待审候选；不会自动并入有效记忆。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。"""
+    """Production implementation of grow — extracted for testability.
+    Behavior is byte-for-byte identical to the original @mcp.tool() body."""
     try:
         await decay_engine.ensure_started()
     except Exception as e:
@@ -2531,9 +2531,6 @@ async def grow(
     if not content or not content.strip():
         return "内容为空，无法整理。"
 
-    # 先落一份不可变的原文证据桶（exact_only，不参与正常召回），
-    # 再让 digest 拆出的候选桶通过 source_evidence_id 指向它。
-    # 真原话只在 source_read 凭精确 ID + 范围读取，不会被故事吞掉。
     try:
         evidence_id, evidence_created = await _store_source_evidence(
             content,
@@ -2544,11 +2541,6 @@ async def grow(
         logger.error(f"grow: _store_source_evidence failed / 原文证据保存失败: {e}")
         return f"内部错误：原文证据保存失败 - {e}"
 
-    # --- Short content fast path: skip digest, use hold logic directly ---
-    # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
-    # For very short inputs (like "1"), calling digest is wasteful:
-    # it sends the full DIGEST_PROMPT (~800 tokens) to DeepSeek for nothing.
-    # Instead, run analyze + create directly.
     if len(content.strip()) < 30:
         logger.info(f"grow short-content fast path: {len(content.strip())} chars")
         try:
@@ -2583,7 +2575,6 @@ async def grow(
         _fire_plan_resolution(content.strip())
         return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
 
-    # --- Step 1: let API split and organize / 让 API 拆分整理 ---
     try:
         items = await dehydrator.digest(content)
     except Exception as e:
@@ -2597,8 +2588,6 @@ async def grow(
     created = 0
     merged = 0
 
-    # --- Step 2: merge or create each item (with per-item error handling) ---
-    # --- 逐条合并或新建（单条失败不影响其他）---
     for item in items:
         try:
             result_name, is_merged = await _merge_or_create(
@@ -2634,6 +2623,16 @@ async def grow(
 
     _fire_plan_resolution(content.strip())
     return f"原文证据→{evidence_id}（{'新存' if evidence_created else '已存在'}）\n待审候选→{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
+
+
+@mcp.tool()
+async def grow(
+    content: str,
+    source_surface: str = "",
+    source_session_id: str = "",
+) -> str:
+    """grow 日记归档 拆分 diary archive memory。【自动整理入口】先保存完整原文证据，再把摘要放进待审候选；不会自动并入有效记忆。source_surface可填Claude官方端或Kelo Home，source_session_id可填会话ID。"""
+    return await _grow_impl(content, source_surface=source_surface, source_session_id=source_session_id)
 
 
 # =============================================================
